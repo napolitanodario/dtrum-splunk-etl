@@ -18,7 +18,8 @@ it for downstream analysis (e.g. FlussoP1 funnel filtering, Splunk export).
 
 | File | Role |
 |------|------|
-| `config.py` | Env credentials, `DISCOVERY_NAME_PREFIXES`, `ACTION_COLUMNS` |
+| `config.example.py` | Committable template; copy to local `config.py` |
+| `config.py` | Local settings (gitignored): prefixes, columns, logging |
 | `queries.py` | USQL string builders (`discovery_query`, `session_actions_query`) |
 | `client.py` | Dynatrace USQL `/table` client with adaptive time windows |
 | `cache.py` | Parquet + JSON sidecar cache and watermark |
@@ -31,7 +32,11 @@ it for downstream analysis (e.g. FlussoP1 funnel filtering, Splunk export).
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+cp config.example.py config.py
 ```
+
+Edit `config.py` and set `DISCOVERY_NAME_PREFIXES` to your application action-name
+prefixes (trailing-only, no leading `%`).
 
 Create a `.env` in the project root:
 
