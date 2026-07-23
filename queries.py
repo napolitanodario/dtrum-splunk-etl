@@ -45,6 +45,7 @@ SELECT
 FROM useraction
 WHERE usersession.userSessionId IN ({ids})
 ORDER BY startTime ASC
+LIMIT 5000
 """.strip()
 
 
@@ -58,6 +59,7 @@ FROM useraction
 WHERE usersession.userId IS NOT NULL
   AND ({clauses})
 GROUP BY sessionId
+LIMIT 5000
 """.strip()
 
 
