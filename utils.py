@@ -1,16 +1,21 @@
+"""Time helpers for Dynatrace USQL timestamps (UTC milliseconds)."""
 
 from datetime import datetime
 
+
+def parse_iso_string(iso_datetime_string: str) -> datetime:
+    """Parse an ISO 8601 string into a timezone-aware datetime.
+
+    Example: 2026-07-14T15:30:00+02:00
+    """
+    return datetime.fromisoformat(iso_datetime_string)
+
+
 def datetime_to_timestamp_ms_utc(dt: datetime) -> int:
-    """Converts a datetime object (with timezone) in timestamp Unix milliseconds."""
+    """Convert a timezone-aware datetime to Unix epoch milliseconds (UTC)."""
     return int(dt.timestamp() * 1000)
 
 
-# example for italian time: "2026-07-14T15:30:00+02:00"
-def parse_iso_string(iso_datetime_string: str) -> datetime:
-    """Converts an ISO 8601 string into a datetime object."""
-    return datetime.fromisoformat(iso_datetime_string)
-
 def iso_string_to_timestamp_ms_utc(iso_datetime_string: str) -> int:
-    """Converts an ISO 8601 string into a timestamp Unix milliseconds."""
+    """Parse an ISO 8601 string and return Unix epoch milliseconds (UTC)."""
     return datetime_to_timestamp_ms_utc(parse_iso_string(iso_datetime_string))

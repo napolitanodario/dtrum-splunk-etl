@@ -1,63 +1,61 @@
-"""USQL query builders for session-level and discovery fetches."""
+"""USQL query builders for discovery and session-action fetches.
 
-from typing import Iterable
+Builders return query strings only; execution is handled by DynatraceUSQLClient.
+Discovery comes before session_actions in the ETL pipeline.
+"""
 
-# Action-level columns pulled for every fetched session. Aliases match the names
-# the analysis layer expects (see analysis.loading). The trailing block holds optional
-# enrichment fields; the analysis layer degrades gracefully when they are absent (old cache).
-_ACTION_COLUMNS = """
-  usersession.userId AS userId,
-  usersession.userSessionId AS sessionId,
-  useraction.name AS name,
-  useraction.type AS type,
-  useraction.duration AS duration,
-  useraction.startTime AS startTime,
-  useraction.endTime AS endTime,
-  useraction.networkTime AS networkTime,
-  useraction.frontendTime AS frontendTime,
-  useraction.serverTime AS serverTime,
-  useraction.targetUrl AS targetUrl,
-  useraction.apdexCategory AS apdex,
-  useraction.requestErrorCount AS requestErrorCount,
-  useraction.javascriptErrorCount AS javascriptErrorCount,
-  useraction.visuallyCompleteTime AS visuallyCompleteTime,
-  useraction.documentInteractiveTime AS domInteractiveTime,
-  usersession.userActionCount AS sessionActionCount,
-  usersession.totalErrorCount AS sessionTotalErrors,
-  usersession.duration AS sessionDuration,
-  usersession.bounce AS bounce,
-  usersession.browserType AS browserType,
-  usersession.country AS country,
-  usersession.city AS city
-""".strip()
+from typing import Iterable, Mapping
 
 
 def _quote_list(values: Iterable[str]) -> str:
+    """Quote string values for a USQL IN (...) list."""
     return ", ".join(f"'{v}'" for v in values)
 
 
-def session_actions_query(session_ids: Iterable[str]) -> str:
-    """All actions for the given sessions, ordered chronologically."""
-    ids = _quote_list(session_ids)
+def _select_list(columns: Mapping[str, str]) -> str:
+    """Build a SELECT list from alias -> USQL expression."""
+    return ",\n  ".join(f"{expr} AS {alias}" for alias, expr in columns.items())
+
+
+def discovery_query(name_prefixes: Iterable[str], top_n: int = 1000) -> str:
+    """Distinct session ids for identified users hitting any name prefix.
+
+    Uses trailing-only LIKE patterns (prefix%). TOP(top_n) raises the USQL
+    aggregation cap on userSessionId (max 1000). Pair with client.fetch
+    page_size=top_n and time-window splitting for complete coverage.
+    """
+    clauses = " OR ".join(
+        f"useraction.name LIKE '{prefix}%'" for prefix in name_prefixes
+    )
     return f"""
-SELECT
-{_ACTION_COLUMNS}
+SELECT TOP(usersession.userSessionId, {top_n}) AS sessionId
 FROM useraction
-WHERE usersession.userSessionId IN ({ids})
-ORDER BY startTime ASC
-LIMIT 5000
+WHERE usersession.userId IS NOT NULL
+  AND usersession.userId != ''
+  AND (
+       {clauses}
+  )
+GROUP BY sessionId
+LIMIT {top_n}
 """.strip()
 
 
-def discovery_query(name_like: Iterable[str]) -> str:
-    """Distinct session ids whose actions match any of the name fragments."""
-    clauses = " OR ".join(f"useraction.name LIKE '{frag}'" for frag in name_like)
+def session_actions_query(
+        session_ids: Iterable[str],
+        columns: Mapping[str, str],
+) -> str:
+    """All actions for the given sessions, ordered by startTime ascending.
+
+    LIMIT 5000 matches the table API row cap. Callers with many sessions or
+    dense actions should chunk session_ids and/or rely on time splitting.
+    """
+    ids = _quote_list(session_ids)
+    select_list = _select_list(columns)
     return f"""
 SELECT
-  usersession.userSessionId AS sessionId
+  {select_list}
 FROM useraction
-WHERE usersession.userId IS NOT NULL
-  AND ({clauses})
-GROUP BY sessionId
+WHERE usersession.userSessionId IN ({ids})
+ORDER BY startTime ASC
 LIMIT 5000
 """.strip()

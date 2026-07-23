@@ -1,10 +1,54 @@
+"""Runtime configuration, credentials, and query parameters."""
+
 import logging
-from dotenv import load_dotenv
-from typing import *
 import os
 
-DISCOVERY_NAME_LIKE = ["%FlussoP1%", "%flussop1%"]
+from dotenv import load_dotenv
 
+# Trailing-only action-name prefixes for discovery (no leading wildcard).
+# Used as LIKE '{prefix}%' in discovery_query.
+DISCOVERY_NAME_PREFIXES = [
+    "/newagenm.web/flussop1",
+    "/NewAge.Web/FlussoP1",
+    "/NewAgeNM.Web/FlussoP1",
+    "loading of page /newagenm.web/flussop1",
+    "loading of page //newagenm.web/flussop1",
+    "Loading of page /NewAgeNM.Web/FlussoP1",
+    "Loading of page /NewAge.Web/FlussoP1",
+    "spostagaranzia on page /newagenm.web/flussop1",
+    "calcolopremio on page /newagenm.web/flussop1",
+    "aggiungibene on page /newagenm.web/flussop1",
+]
+
+# alias -> USQL expression for session_actions_query SELECT list.
+ACTION_COLUMNS = {
+    "userId": "usersession.userId",
+    "sessionId": "usersession.userSessionId",
+    "name": "useraction.name",
+    "type": "useraction.type",
+    "duration": "useraction.duration",
+    "startTime": "useraction.startTime",
+    "endTime": "useraction.endTime",
+    "networkTime": "useraction.networkTime",
+    "frontendTime": "useraction.frontendTime",
+    "serverTime": "useraction.serverTime",
+    "targetUrl": "useraction.targetUrl",
+    "apdex": "useraction.apdexCategory",
+    "requestErrorCount": "useraction.requestErrorCount",
+    "javascriptErrorCount": "useraction.javascriptErrorCount",
+    "visuallyCompleteTime": "useraction.visuallyCompleteTime",
+    "domInteractiveTime": "useraction.documentInteractiveTime",
+    "sessionActionCount": "usersession.userActionCount",
+    "sessionTotalErrors": "usersession.totalErrorCount",
+    "sessionDuration": "usersession.duration",
+    "bounce": "usersession.bounce",
+    "browserType": "usersession.browserType",
+    "country": "usersession.country",
+    "city": "usersession.city",
+}
+
+# Must match TOP(..., n) / LIMIT n in discovery_query.
+DISCOVERY_TOP_N = 1000
 
 load_dotenv()
 
@@ -18,6 +62,7 @@ log = logging.getLogger("usat")
 
 
 def get_credentials() -> tuple[str, str]:
+    """Load Dynatrace environment id and API token from the environment."""
     env_id = os.getenv("DT_ENV_ID")
     api_token = os.getenv("DT_API_TOKEN")
 

@@ -1,6 +1,22 @@
-/.idea
-/__pycache__
+# Secrets and local env
 .env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Local USQL cache
 .cache/
 
-/*.csv
+# Generated / scratch data
+*.csv
+*.parquet
+*.meta.json
+*.watermark.json

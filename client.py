@@ -1,26 +1,38 @@
-"""Low-level Dynatrace USQL table API client."""
+"""Low-level Dynatrace USQL table API client.
 
-import time
+Fetches complete, non-sampled result sets by walking a time range with an
+adaptive window. The table endpoint caps each response (typically 5000 rows)
+and may return extrapolated data; paging past that cap is not reliable, so
+this client shrinks the time window until every accepted page is exact.
+"""
+
 import logging
+import time
 from typing import Optional
-from urllib.parse import urlencode, quote
+from urllib.parse import quote, urlencode
 
-import requests
 import pandas as pd
+import requests
 
 log = logging.getLogger("usat")
 
-PAGE_SIZE = 5_000        # API maximum rows per request
-MIN_WINDOW_MS = 10_000    # smallest time window before giving up (1 second)
-INITIAL_WINDOW_MIN = 10  # starting time window size in minutes
+# Hard cap on rows returned by a single /table response.
+PAGE_SIZE = 5_000
+# Starting window size for the adaptive walk (minutes).
+INITIAL_WINDOW_MIN = 10
+# Smallest window before fetch fails instead of returning incomplete data.
+MIN_WINDOW_MS = 1_000
 RETRY_ATTEMPTS = 3
-RETRY_BACKOFF = 5       # seconds between retries on 429/503
+RETRY_BACKOFF = 5  # seconds between retries on 429/503
 
 
 class DynatraceUSQLClient:
+    """HTTP client for GET /api/v1/userSessionQueryLanguage/table."""
+
     def __init__(self, env_id: str, api_token: str, timeout: int = 60):
         self.base_url = (
-            f"https://{env_id}.live.dynatrace.com/api/v1/userSessionQueryLanguage/table"
+            f"https://{env_id}.live.dynatrace.com"
+            f"/api/v1/userSessionQueryLanguage/table"
         )
         self.timeout = timeout
         self.session = requests.Session()
@@ -29,64 +41,27 @@ class DynatraceUSQLClient:
             "Accept": "application/json",
         })
 
-    # Dynatrace doc: https://docs.dynatrace.com/docs/shortlink/api-usql-table#parameters
-    def _get_page(
-            self, query: str, start_ms: int, end_ms: int,
-            offset_utc_min: Optional[int] = None,
-            page_size: Optional[int] = None,
-    ) -> dict:
-
-        log.debug("request window: start=%s end=%s offsetUTC=%s pageSize=%s",
-                  start_ms, end_ms, offset_utc_min, page_size)
-
-        params = {
-            "query": query,
-            "startTimestamp": start_ms,
-            "endTimestamp": end_ms,
-            "explain": "true",
-        }
-
-        if offset_utc_min is not None:
-            params["offsetUTC"] = offset_utc_min
-
-        if page_size is not None:
-            params["pageSize"] = page_size
-
-        # quote_via=quote keeps spaces as %20 (the API rejects '+').
-        qs = urlencode(params, quote_via=quote)
-        for attempt in range(1, RETRY_ATTEMPTS + 1):
-            resp = self.session.get(f"{self.base_url}?{qs}", timeout=self.timeout)
-            if resp.status_code == 200:
-                data = resp.json()
-                for explanation in data.get("explanations") or []:
-                    log.info("USQL explain: %s", explanation)
-                return data
-
-            elif resp.status_code in (429, 503) and attempt < RETRY_ATTEMPTS:
-                log.warning("HTTP %s - retry %d/%d in %ds",
-                            resp.status_code, attempt, RETRY_ATTEMPTS, RETRY_BACKOFF)
-                time.sleep(RETRY_BACKOFF)
-                continue
-
-            resp.raise_for_status()
-
-        raise RuntimeError("Max retries exceeded")
-
     def fetch(
-            self, query: str, start_ms: int, end_ms: int,
+            self,
+            query: str,
+            start_ms: int,
+            end_ms: int,
             offset_utc_min: Optional[int] = None,
             initial_window_min: int = INITIAL_WINDOW_MIN,
             min_window_ms: int = MIN_WINDOW_MS,
             page_size: int = PAGE_SIZE,
     ) -> pd.DataFrame:
-        """Fetch every row a query matches within a time frame.
+        """Fetch every matching row in [start_ms, end_ms].
 
-        The API caps a single response at PAGE_SIZE rows and may return sampled
-        (extrapolated) data. Since paging cannot go past that cap, the only
-        reliable way to retrieve everything is to split the time frame. This
-        walks the range with an adaptive window: it shrinks the window whenever a
-        response is truncated or sampled, and grows it again once responses are
-        comfortably small, so completeness is guaranteed without wasting requests.
+        Walks the range with an adaptive time window:
+        - shrinks and retries the same start when the page is truncated
+          (len(rows) >= page_size) or sampled (extrapolationLevel != 1);
+        - grows again toward the initial size when responses stay small;
+        - de-duplicates rows at the end (session time filter can overlap
+          adjacent window boundaries).
+
+        For queries limited by TOP(n) (e.g. discovery with n=1000), pass
+        page_size=n so truncation is detected correctly.
         """
         all_rows = []
         columns = None
@@ -111,8 +86,7 @@ class DynatraceUSQLClient:
             truncated = len(rows) >= page_size
             sampled = extrapolation_level != 1
 
-            # An incomplete window means the data is untrustworthy; shrink and retry
-            # the same start so nothing is missed.
+            # Incomplete data: shrink the window and retry from the same start.
             if truncated or sampled:
                 if window_ms <= min_window_ms:
                     raise RuntimeError(
@@ -123,18 +97,71 @@ class DynatraceUSQLClient:
                         f"Add more selective filters to the query."
                     )
                 window_ms = max(window_ms // 2, min_window_ms)
-                log.info("Incomplete window (rows=%d, extrapolationLevel=%s). "
-                         "Shrinking window to %d ms and retrying.",
-                         len(rows), extrapolation_level, window_ms)
+                log.info(
+                    "Incomplete window (rows=%d, extrapolationLevel=%s). "
+                    "Shrinking window to %d ms and retrying.",
+                    len(rows), extrapolation_level, window_ms,
+                )
                 continue
 
             all_rows.extend(rows)
             current_start = current_end
 
-            # Grow the window back when responses stay well below the cap, to keep
-            # the number of requests low over sparse stretches.
+            # Widen again on sparse stretches to reduce request count.
             if len(rows) < page_size // 2:
                 window_ms = min(window_ms * 2, initial_window_ms)
 
         df = pd.DataFrame(all_rows, columns=columns)
         return df.drop_duplicates().reset_index(drop=True)
+
+    # Dynatrace doc: https://docs.dynatrace.com/docs/shortlink/api-usql-table
+    def _get_page(
+            self,
+            query: str,
+            start_ms: int,
+            end_ms: int,
+            offset_utc_min: Optional[int] = None,
+            page_size: Optional[int] = None,
+    ) -> dict:
+        """Execute one USQL table request for a single time window.
+
+        Always requests explain=true and logs Dynatrace explanations.
+        Retries on HTTP 429/503 with a fixed backoff.
+        """
+        log.debug(
+            "request window: start=%s end=%s offsetUTC=%s pageSize=%s",
+            start_ms, end_ms, offset_utc_min, page_size,
+        )
+
+        params = {
+            "query": query,
+            "startTimestamp": start_ms,
+            "endTimestamp": end_ms,
+            "explain": "true",
+        }
+        if offset_utc_min is not None:
+            params["offsetUTC"] = offset_utc_min
+        if page_size is not None:
+            params["pageSize"] = page_size
+
+        # quote_via=quote keeps spaces as %20 (the API rejects '+').
+        qs = urlencode(params, quote_via=quote)
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            resp = self.session.get(f"{self.base_url}?{qs}", timeout=self.timeout)
+            if resp.status_code == 200:
+                data = resp.json()
+                for explanation in data.get("explanations") or []:
+                    log.info("USQL explain: %s", explanation)
+                return data
+
+            if resp.status_code in (429, 503) and attempt < RETRY_ATTEMPTS:
+                log.warning(
+                    "HTTP %s - retry %d/%d in %ds",
+                    resp.status_code, attempt, RETRY_ATTEMPTS, RETRY_BACKOFF,
+                )
+                time.sleep(RETRY_BACKOFF)
+                continue
+
+            resp.raise_for_status()
+
+        raise RuntimeError("Max retries exceeded")
