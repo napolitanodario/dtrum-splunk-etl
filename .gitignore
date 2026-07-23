@@ -20,3 +20,6 @@ venv/
 *.parquet
 *.meta.json
 *.watermark.json
+
+# config files
+config.py
