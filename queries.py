@@ -61,17 +61,3 @@ WHERE usersession.userId IS NOT NULL
 GROUP BY sessionId
 LIMIT 5000
 """.strip()
-
-
-
-"""
-
-SELECT
-  COUNT(DISTINCT usersession.userSessionId) AS n_sessionId
-FROM useraction
-WHERE usersession.userId IS NOT NULL
-  AND (useraction.name LIKE '%FlussoP1%' OR useraction.name LIKE '%flussop1%')
-"""
-
-
-

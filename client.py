@@ -34,16 +34,16 @@ class DynatraceUSQLClient:
             self, query: str, start_ms: int, end_ms: int,
             offset_utc_min: Optional[int] = None,
             page_size: Optional[int] = None,
-            page_offset: Optional[int] = None
     ) -> dict:
 
-        log.debug("request window: start=%s end=%s offsetUTC=%s pageSize=%s pageOffset=%s",
-                  start_ms, end_ms, offset_utc_min, page_size, page_offset)
+        log.debug("request window: start=%s end=%s offsetUTC=%s pageSize=%s",
+                  start_ms, end_ms, offset_utc_min, page_size)
 
         params = {
             "query": query,
             "startTimestamp": start_ms,
-            "endTimestamp": end_ms
+            "endTimestamp": end_ms,
+            "explain": "true",
         }
 
         if offset_utc_min is not None:
@@ -52,15 +52,15 @@ class DynatraceUSQLClient:
         if page_size is not None:
             params["pageSize"] = page_size
 
-        if page_offset is not None:
-            params["pageOffset"] = page_offset
-
         # quote_via=quote keeps spaces as %20 (the API rejects '+').
         qs = urlencode(params, quote_via=quote)
         for attempt in range(1, RETRY_ATTEMPTS + 1):
             resp = self.session.get(f"{self.base_url}?{qs}", timeout=self.timeout)
             if resp.status_code == 200:
-                return resp.json()
+                data = resp.json()
+                for explanation in data.get("explanations") or []:
+                    log.info("USQL explain: %s", explanation)
+                return data
 
             elif resp.status_code in (429, 503) and attempt < RETRY_ATTEMPTS:
                 log.warning("HTTP %s - retry %d/%d in %ds",
@@ -99,7 +99,7 @@ class DynatraceUSQLClient:
             current_end = min(current_start + window_ms, end_ms)
 
             data = self._get_page(
-                query, current_start, current_end, offset_utc_min, page_size, 0
+                query, current_start, current_end, offset_utc_min, page_size
             )
 
             if columns is None:
