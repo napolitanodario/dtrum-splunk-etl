@@ -24,7 +24,8 @@ it for downstream analysis (e.g. FlussoP1 funnel filtering, Splunk export).
 | `client.py` | Dynatrace USQL `/table` client with adaptive time windows |
 | `cache.py` | Parquet + JSON sidecar cache and watermark |
 | `utils.py` | ISO datetime to UTC epoch ms |
-| `main.py` | Example: run discovery for a sample hour |
+| `main.py` | CLI: discover sessions and download/cache user actions |
+| `logs/` | Per-run log files (gitignored) |
 
 ## Setup
 
@@ -47,26 +48,52 @@ DT_API_TOKEN=your-api-token
 
 The token needs the `DTAQLAccess` (User sessions) scope.
 
-## Run the discovery example
+## CLI usage
 
 ```bash
-python3 main.py
+python3 main.py \
+  --start 2026-07-13T09:00:00+02:00 \
+  --end 2026-07-13T10:00:00+02:00
 ```
 
-`main.py` builds `discovery_query(...)`, calls `fetch` with `page_size` equal to
-`DISCOVERY_TOP_N` (1000), and prints the session id DataFrame.
+Useful options:
+
+| Flag | Meaning |
+|------|---------|
+| `--force` | Ignore Parquet cache and re-fetch |
+| `--chunk-size N` | Session ids per actions query (default 40) |
+| `--log-dir DIR` | Log directory (default `logs/`) |
+| `--cache-dir DIR` | Override cache root (default `.cache/usql`) |
+
+Pipeline:
+
+1. Discovery query (identified users + name prefixes), cached as `discovery`.
+2. Session ids split into chunks; each chunk fetches actions and is cached.
+3. Results are concatenated and de-duplicated in memory for the run summary.
+
+Logs (under `logs/`):
+
+- `etl_<utc>_issues.log` – WARNING+ only (incomplete windows, sampling shrinks,
+  fetch failures).
+- `etl_<utc>.log` – full run trace (DEBUG+), including USQL explain messages.
+
+`fetch` treats a window as incomplete when `len(rows) >= page_size` or
+`extrapolationLevel != 1`, shrinks the time window, and logs a WARNING. If the
+minimum window is still incomplete, the CLI exits with an error.
 
 ## USQL limits (important)
 
 - Table API: at most **5000** rows per response; use time splitting (already in
   `fetch`) rather than relying on `pageOffset` past that cap.
 - Without `LIMIT` in the query, Dynatrace applies an implicit limit of **50**.
-- `GROUP BY` on `userSessionId` needs `TOP(field, n)` with **n <= 1000**.
+- Discovery filters on `useraction.startTime` via `{start_ms}`/`{end_ms}`
+  placeholders (substituted per window by the client). No `GROUP BY`/`TOP`:
+  duplicate `sessionId` rows are removed with `drop_duplicates` after fetch.
 - `extrapolationLevel != 1` means sampled data; `fetch` shrinks the window.
 - Prefer trailing-only `LIKE 'prefix%'` (no leading `%`) for performance.
 
-For discovery queries that use `TOP(..., 1000)`, always pass `page_size=1000`
-into `fetch` so a full page is treated as potentially incomplete.
+Use `page_size=5000` (default) for discovery and actions so truncation matches
+`LIMIT 5000`.
 
 ## Cache usage (optional)
 
@@ -76,7 +103,7 @@ from cache import UsqlCache
 cache = UsqlCache()
 df = cache.get(query, start_ms, end_ms, label="discovery")
 if df is None:
-    df = client.fetch(query, start_ms, end_ms, page_size=1000)
+    df = client.fetch(query, start_ms, end_ms, page_size=5000)
     cache.put(df, query, start_ms, end_ms, label="discovery")
 
 # Continuous ETL: resume after the last covered end_ms

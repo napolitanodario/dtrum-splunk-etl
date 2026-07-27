@@ -48,17 +48,13 @@ ACTION_COLUMNS = {
     "city": "usersession.city",
 }
 
-# Must match TOP(..., n) / LIMIT n in discovery_query.
-DISCOVERY_TOP_N = 1000
+# Row limit for discovery LIMIT clause (align with client PAGE_SIZE = 5000).
+DISCOVERY_LIMIT = 5000
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-
+# Logging is configured by the CLI (main.setup_logging). Keep a named logger
+# for modules that import config early.
 log = logging.getLogger("usat")
 
 

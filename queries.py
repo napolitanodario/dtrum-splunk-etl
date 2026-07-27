@@ -2,9 +2,16 @@
 
 Builders return query strings only; execution is handled by DynatraceUSQLClient.
 Discovery comes before session_actions in the ETL pipeline.
+
+Discovery queries may include {start_ms} / {end_ms} placeholders. The client
+substitutes them per adaptive time window so action startTime stays aligned
+with the API timeframe.
 """
 
 from typing import Iterable, Mapping
+
+# Align with DynatraceUSQLClient.PAGE_SIZE / table API row cap.
+_DEFAULT_LIMIT = 5_000
 
 
 def _quote_list(values: Iterable[str]) -> str:
@@ -17,27 +24,42 @@ def _select_list(columns: Mapping[str, str]) -> str:
     return ",\n  ".join(f"{expr} AS {alias}" for alias, expr in columns.items())
 
 
-def discovery_query(name_prefixes: Iterable[str], top_n: int = 1000) -> str:
-    """Distinct session ids for identified users hitting any name prefix.
+def discovery_query(
+        name_prefixes: Iterable[str],
+        limit: int = _DEFAULT_LIMIT,
+) -> str:
+    """Session ids for identified users with a matching action in the window.
 
-    Uses trailing-only LIKE patterns (prefix%). TOP(top_n) raises the USQL
-    aggregation cap on userSessionId (max 1000). Pair with client.fetch
-    page_size=top_n and time-window splitting for complete coverage.
+    Returns one row per matching useraction (sessionId may repeat). Callers
+    should drop_duplicates on sessionId after fetch.
+
+    Filters on useraction.startTime via {start_ms}/{end_ms} placeholders
+    (filled by DynatraceUSQLClient per window). No GROUP BY / TOP, so the
+    row cap is LIMIT/pageSize (5000) instead of the 1000 aggregation limit.
     """
     clauses = " OR ".join(
         f"useraction.name LIKE '{prefix}%'" for prefix in name_prefixes
     )
     return f"""
-SELECT TOP(usersession.userSessionId, {top_n}) AS sessionId
+SELECT usersession.userSessionId AS sessionId
 FROM useraction
 WHERE usersession.userId IS NOT NULL
   AND usersession.userId != ''
   AND (
        {clauses}
   )
-GROUP BY sessionId
-LIMIT {top_n}
+  AND useraction.startTime >= {{start_ms}}
+  AND useraction.startTime < {{end_ms}}
+LIMIT {limit}
 """.strip()
+
+
+def discovery_query_test(
+        name_prefixes: Iterable[str],
+        limit: int = _DEFAULT_LIMIT,
+) -> str:
+    """Diagnostic twin of discovery_query (same shape; kept for local tests)."""
+    return discovery_query(name_prefixes, limit=limit)
 
 
 def session_actions_query(

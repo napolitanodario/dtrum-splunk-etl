@@ -57,11 +57,12 @@ class DynatraceUSQLClient:
         - shrinks and retries the same start when the page is truncated
           (len(rows) >= page_size) or sampled (extrapolationLevel != 1);
         - grows again toward the initial size when responses stay small;
-        - de-duplicates rows at the end (session time filter can overlap
-          adjacent window boundaries).
+        - de-duplicates rows at the end (window boundaries and repeated
+          sessionId rows from discovery without GROUP BY).
 
-        For queries limited by TOP(n) (e.g. discovery with n=1000), pass
-        page_size=n so truncation is detected correctly.
+        If the query contains {start_ms}/{end_ms} placeholders (discovery),
+        they are replaced with the current window bounds so action-time
+        filters stay aligned with the API timeframe.
         """
         all_rows = []
         columns = None
@@ -97,10 +98,13 @@ class DynatraceUSQLClient:
                         f"Add more selective filters to the query."
                     )
                 window_ms = max(window_ms // 2, min_window_ms)
-                log.info(
-                    "Incomplete window (rows=%d, extrapolationLevel=%s). "
+                # WARNING so file issue logs capture sampling / truncation.
+                log.warning(
+                    "Incomplete window [%s, %s]: rows=%d, "
+                    "extrapolationLevel=%s, page_size=%d. "
                     "Shrinking window to %d ms and retrying.",
-                    len(rows), extrapolation_level, window_ms,
+                    current_start, current_end, len(rows),
+                    extrapolation_level, page_size, window_ms,
                 )
                 continue
 
@@ -127,14 +131,20 @@ class DynatraceUSQLClient:
 
         Always requests explain=true and logs Dynatrace explanations.
         Retries on HTTP 429/503 with a fixed backoff.
+        Substitutes {start_ms}/{end_ms} in the query when present.
         """
+        bound_query = (
+            query
+            .replace("{start_ms}", str(start_ms))
+            .replace("{end_ms}", str(end_ms))
+        )
         log.debug(
             "request window: start=%s end=%s offsetUTC=%s pageSize=%s",
             start_ms, end_ms, offset_utc_min, page_size,
         )
 
         params = {
-            "query": query,
+            "query": bound_query,
             "startTimestamp": start_ms,
             "endTimestamp": end_ms,
             "explain": "true",

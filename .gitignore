@@ -15,6 +15,9 @@ venv/
 # Local USQL cache
 .cache/
 
+# Run logs
+logs/
+
 # Generated / scratch data
 *.csv
 *.parquet
