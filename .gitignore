@@ -15,6 +15,9 @@ venv/
 # Local USQL cache
 .cache/
 
+# Splunk HEC private config (copy from config.example.toml)
+splunk_ingest/prod.toml
+
 # Run logs
 logs/
 
@@ -29,6 +32,11 @@ output/
 
 # config files
 config.py
+
+# Private funnel catalogue / matcher (use *.example.py templates)
+funnel/definitions.py
+funnel/categories.py
+funnel/breakdown.py
 
 # porting
 test_porting/

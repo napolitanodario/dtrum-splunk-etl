@@ -1,17 +1,17 @@
 # dtrum_splunk_etl
 
 Python ETL helpers to pull Dynatrace RUM user-session data via USQL and prepare
-it for downstream analysis (e.g. FlussoP1 funnel filtering, Splunk export).
+it for downstream funnel analysis and Splunk export.
 
 ## What it does
 
 1. **Discovery** – find tagged user sessions (`userId` not null) whose actions
-   match FlussoP1 name prefixes.
+   match configured name prefixes.
 2. **Session actions** – fetch action timelines for those session ids.
 3. **Complete fetch** – `DynatraceUSQLClient.fetch` walks a time range with an
    adaptive window so results are not truncated or sampled.
-4. **Funnel reconstruction** – rebuild FlussoP1 emission attempts per tagged
-   `userId` from the raw action stream (`funnel/` package).
+4. **Funnel reconstruction** – rebuild emission attempts per tagged `userId`
+   from the raw action stream (`funnel/` package).
 5. **Local cache** – two-tier Parquet cache per calendar day: staging chunks during
    fetch, consolidated `actions.parquet` after a complete run; watermark per day.
 
@@ -27,7 +27,8 @@ it for downstream analysis (e.g. FlussoP1 funnel filtering, Splunk export).
 | `utils.py` | ISO datetime to UTC epoch ms |
 | `main.py` | CLI: fetch actions and optionally build flows |
 | `build_flows.py` | CLI: reconstruct flows from Parquet or cache chunks |
-| `funnel/` | FlussoP1 breakdown, tagging, per-flusso metrics |
+| `funnel/` | Funnel breakdown, tagging, per-flusso metrics |
+| `funnel/*.example.py` | Committable stubs for private funnel definitions / matcher |
 | `logs/` | Per-run log files (gitignored) |
 
 ## Setup
@@ -37,10 +38,16 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp config.example.py config.py
+cp funnel/definitions.example.py funnel/definitions.py
+cp funnel/categories.example.py funnel/categories.py
+cp funnel/breakdown.example.py funnel/breakdown.py
 ```
 
 Edit `config.py` and set `DISCOVERY_NAME_PREFIXES` to your application action-name
 prefixes (trailing-only, no leading `%`).
+
+Replace the three `funnel/*.py` copies with your private step catalogue, category
+keywords, and breakdown implementation (the `.example.py` files stay as templates).
 
 Create a `.env` in the project root:
 
@@ -104,8 +111,9 @@ Pipeline:
 
 ## Funnel reconstruction
 
-The `funnel/` package ports the faithful FlussoP1 breakdown (C#
-`StepBreakdownProcessor`). It assumes:
+The `funnel/` package rebuilds emission attempts from a normalised action stream.
+Private matching rules live in local (gitignored) modules under `funnel/`.
+It assumes:
 
 - Every action row has a Dynatrace **user tag** (`userId`); discovery already
   filters `usersession.userId IS NOT NULL`.
@@ -174,7 +182,17 @@ Legacy flat files under `.cache/usql/` can be moved with:
 python3 -c "from cache import migrate_legacy_flat_cache; print(migrate_legacy_flat_cache())"
 ```
 
-## Splunk ingest (planned)
+## Splunk ingest
 
-`splunk_ingest` under `test_porting/` will be wired to `funnel.reconstruct_flows()`
-once the continuous 24h pipeline is stable.
+Package `splunk_ingest/` ships lean **schema v2** flusso events to Splunk HEC
+(`sourcetype` `…:flusso` only). It reads a day from `.cache/usql/{YYYY-MM-DD}/`
+and reuses `funnel.reconstruct_flows` + `funnel.splunk_events.iter_flusso_events`.
+
+```bash
+cp splunk_ingest/config.example.toml splunk_ingest/prod.toml  # set url/token
+python -m splunk_ingest backfill --since 2026-06-22 --until 2026-06-22 \
+  --config splunk_ingest/prod.toml --dry-run
+python -m splunk_ingest run --config splunk_ingest/prod.toml
+```
+
+See [splunk_ingest/README.md](splunk_ingest/README.md).

@@ -1,0 +1,27 @@
+# Copy to a private file (e.g. prod.toml) and fill in. Env vars (SPLUNK_HEC_*) work too.
+# Do not commit real tokens.
+
+[hec]
+url = "https://http-inputs-example.splunkcloud.com/services/collector/event"
+token = "REPLACE_ME"
+index = "idx_funnel_events"
+source = "dtrum-splunk-etl"
+host = "dtrum-pipeline"
+sourcetype_prefix = "dtrum:funnel"          # -> :flusso only (schema v2)
+verify = true                               # false or a CA path for self-signed
+timeout = 60
+batch_size = 500
+gzip = true
+# channel = "..."                           # set to enable indexer acknowledgment
+
+[cadence]
+settlement_lag_hours = 6                     # a day ships only once its end + lag is past
+
+[cache]
+dir = ".cache/usql"
+
+[state]
+dir = ".cache/splunk_state"
+
+[pii]
+hash_user_id = false

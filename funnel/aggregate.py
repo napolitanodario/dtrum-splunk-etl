@@ -4,7 +4,7 @@ import pandas as pd
 
 from funnel.categories import category_flags
 
-# Reaching step 6 ('06 - Salva') marks a completed emission.
+# Reaching this step index marks a completed emission (override locally if needed).
 COMPLETION_STEP = 6
 
 

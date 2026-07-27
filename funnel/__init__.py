@@ -1,4 +1,4 @@
-"""FlussoP1 funnel reconstruction from raw Dynatrace user actions."""
+"""Funnel reconstruction from raw Dynatrace user actions."""
 
 from funnel.aggregate import COMPLETION_STEP, build_flow_features
 from funnel.breakdown import build_breakdown
