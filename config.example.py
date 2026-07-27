@@ -51,6 +51,9 @@ ACTION_COLUMNS = {
 # Row limit for discovery LIMIT clause (align with client PAGE_SIZE = 5000).
 DISCOVERY_LIMIT = 5000
 
+# IANA timezone for flusso_id day bucketing (calendar day for 24h ETL windows).
+FUNNEL_DAY_TZ = "Europe/Rome"
+
 load_dotenv()
 
 # Logging is configured by the CLI (main.setup_logging). Keep a named logger

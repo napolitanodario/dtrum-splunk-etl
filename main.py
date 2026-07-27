@@ -18,6 +18,7 @@ from config import (
     DISCOVERY_NAME_PREFIXES,
     get_credentials,
 )
+from funnel.reconstruct import reconstruct_flows, write_flow_outputs
 from queries import discovery_query, session_actions_query
 from utils import iso_string_to_timestamp_ms_utc
 
@@ -25,20 +26,15 @@ log = logging.getLogger("usat")
 
 LOG_DIR = Path("logs")
 OUTPUT_DIR = Path("output")
-# Sessions per actions query: keeps URL size and LIMIT 5000 headroom.
 DEFAULT_CHUNK_SIZE = 40
-# First full-day smoke run defaults (Europe/Rome).
-DEFAULT_START = "2026-07-21T09:00:00+02:00"
-DEFAULT_END = "2026-07-21T18:00:00+02:00"
-DEFAULT_OUTPUT = OUTPUT_DIR / "user_actions_2026-07-21_09-18.parquet"
+# Default: one full calendar day (24h) in Europe/Rome — typical continuous ETL unit.
+DEFAULT_START = "2026-07-21T00:00:00+02:00"
+DEFAULT_END = "2026-07-22T00:00:00+02:00"
+DEFAULT_OUTPUT = OUTPUT_DIR / "user_actions_2026-07-21.parquet"
 
 
 def setup_logging(log_dir: Path) -> tuple[Path, Path]:
-    """Configure console + file logging under log_dir.
-
-    Returns (full_run_log, issues_log). The issues file stores WARNING+
-    (incomplete windows, sampling, hard failures).
-    """
+    """Configure console + file logging under log_dir."""
     log_dir.mkdir(parents=True, exist_ok=True)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_log = log_dir / f"etl_{run_id}.log"
@@ -76,8 +72,8 @@ def setup_logging(log_dir: Path) -> tuple[Path, Path]:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Discover matching sessions and download/cache their user actions "
-            "from Dynatrace USQL for a given time range."
+            "Discover tagged-user sessions, fetch user actions from Dynatrace USQL, "
+            "and optionally reconstruct FlussoP1 funnel flows."
         ),
     )
     parser.add_argument(
@@ -117,7 +113,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--output",
         type=Path,
         default=DEFAULT_OUTPUT,
-        help=f"Output Parquet path for all fetched actions (default: {DEFAULT_OUTPUT})",
+        help=f"Output Parquet path for fetched actions (default: {DEFAULT_OUTPUT})",
+    )
+    parser.add_argument(
+        "--build-flows",
+        action="store_true",
+        help="After fetch (or --input), reconstruct FlussoP1 flows and write flow Parquets",
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        help="Skip fetch; build flows from an existing actions Parquet file",
+    )
+    parser.add_argument(
+        "--flow-stem",
+        type=str,
+        default=None,
+        help="Stem for flow output files (default: derived from --output or --input)",
     )
     return parser.parse_args(argv)
 
@@ -184,7 +197,6 @@ def run(
         start_ms, end_ms, force, chunk_size,
     )
 
-    # --- Phase 1: discovery (action startTime filter; dedupe session ids) ---
     d_query = discovery_query(DISCOVERY_NAME_PREFIXES)
     sessions_df = _load_or_fetch(
         client, cache, d_query, start_ms, end_ms,
@@ -197,12 +209,9 @@ def run(
         return pd.DataFrame()
 
     sessions_df = sessions_df.drop_duplicates(subset=["sessionId"])
-    session_ids = (
-        sessions_df["sessionId"].dropna().astype(str).tolist()
-    )
+    session_ids = sessions_df["sessionId"].dropna().astype(str).tolist()
     log.info("Discovery found %d distinct sessions", len(session_ids))
 
-    # --- Phase 2: actions in chunks ---
     chunks = list(_chunked(session_ids, chunk_size))
     parts: list[pd.DataFrame] = []
     for index, chunk in enumerate(chunks, start=1):
@@ -227,12 +236,34 @@ def run(
 
     actions = pd.concat(parts, ignore_index=True).drop_duplicates()
     log.info(
-        "ETL done action_rows=%d sessions=%d",
-        len(actions), actions["sessionId"].nunique() if "sessionId" in actions else 0,
+        "ETL done action_rows=%d sessions=%d users=%d",
+        len(actions),
+        actions["sessionId"].nunique() if "sessionId" in actions else 0,
+        actions["userId"].nunique() if "userId" in actions else 0,
     )
-    # Advance a high-level watermark on the discovery query fingerprint.
     cache.set_watermark(d_query, end_ms)
     return actions
+
+
+def _output_stem(path: Path) -> str:
+    name = path.stem
+    for prefix in ("user_actions_", "actions_"):
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
+def _build_and_write_flows(actions: pd.DataFrame, output_dir: Path, stem: str) -> dict[str, Path]:
+    log.info("Reconstructing flows from %d action rows", len(actions))
+    result = reconstruct_flows(actions)
+    paths = write_flow_outputs(result, output_dir, stem)
+    log.info(
+        "Flows done flussi=%d matched_rows=%d completed=%d",
+        len(result.flows),
+        len(result.matched),
+        int(result.flows["completed"].sum()) if not result.flows.empty else 0,
+    )
+    return paths
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -241,34 +272,50 @@ def main(argv: Sequence[str] | None = None) -> int:
     log.info("Logging to %s (issues: %s)", run_log, issues_log)
 
     try:
-        start_ms = iso_string_to_timestamp_ms_utc(args.start)
-        end_ms = iso_string_to_timestamp_ms_utc(args.end)
-        actions = run(
-            start_ms,
-            end_ms,
-            force=args.force,
-            chunk_size=args.chunk_size,
-            cache_dir=args.cache_dir,
-        )
+        if args.input is not None:
+            actions = pd.read_parquet(args.input)
+            log.info("Loaded %d rows from %s", len(actions), args.input)
+            source_path = args.input
+        else:
+            start_ms = iso_string_to_timestamp_ms_utc(args.start)
+            end_ms = iso_string_to_timestamp_ms_utc(args.end)
+            actions = run(
+                start_ms,
+                end_ms,
+                force=args.force,
+                chunk_size=args.chunk_size,
+                cache_dir=args.cache_dir,
+            )
+            source_path = args.output
     except Exception:
         log.exception("ETL aborted due to an error")
         return 1
 
     if actions.empty:
-        log.warning("No actions to write")
+        log.warning("No actions to process")
         print("action_rows=0")
         print(f"log={run_log}")
         print(f"issues_log={issues_log}")
         return 0
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    actions.to_parquet(args.output, index=False, compression="zstd")
-    log.info("Wrote %s rows=%d", args.output, len(actions))
+    if args.input is None:
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        actions.to_parquet(source_path, index=False, compression="zstd")
+        log.info("Wrote %s rows=%d", source_path, len(actions))
+
+    flow_paths: dict[str, Path] = {}
+    if args.build_flows:
+        stem = args.flow_stem or _output_stem(source_path)
+        flow_paths = _build_and_write_flows(actions, OUTPUT_DIR, stem)
 
     print(f"action_rows={len(actions)}")
     if "sessionId" in actions.columns:
         print(f"sessions={actions['sessionId'].nunique()}")
-    print(f"output={args.output}")
+    if "userId" in actions.columns:
+        print(f"users={actions['userId'].nunique()}")
+    print(f"output={source_path}")
+    for key, path in flow_paths.items():
+        print(f"{key}={path}")
     print(f"log={run_log}")
     print(f"issues_log={issues_log}")
     return 0

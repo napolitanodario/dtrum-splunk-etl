@@ -5,13 +5,14 @@ it for downstream analysis (e.g. FlussoP1 funnel filtering, Splunk export).
 
 ## What it does
 
-1. **Discovery** – find identified user sessions whose actions match FlussoP1
-   name prefixes.
-2. **Session actions** – fetch full action timelines for those session ids
-   (query builder ready; wire into the pipeline as needed).
+1. **Discovery** – find tagged user sessions (`userId` not null) whose actions
+   match FlussoP1 name prefixes.
+2. **Session actions** – fetch action timelines for those session ids.
 3. **Complete fetch** – `DynatraceUSQLClient.fetch` walks a time range with an
    adaptive window so results are not truncated or sampled.
-4. **Local cache** – optional Parquet cache with provenance sidecars and a
+4. **Funnel reconstruction** – rebuild FlussoP1 emission attempts per tagged
+   `userId` from the raw action stream (`funnel/` package).
+5. **Local cache** – optional Parquet cache with provenance sidecars and a
    per-query watermark for continuous runs.
 
 ## Layout
@@ -24,7 +25,9 @@ it for downstream analysis (e.g. FlussoP1 funnel filtering, Splunk export).
 | `client.py` | Dynatrace USQL `/table` client with adaptive time windows |
 | `cache.py` | Parquet + JSON sidecar cache and watermark |
 | `utils.py` | ISO datetime to UTC epoch ms |
-| `main.py` | CLI: discover sessions and download/cache user actions |
+| `main.py` | CLI: fetch actions and optionally build flows |
+| `build_flows.py` | CLI: reconstruct flows from Parquet or cache chunks |
+| `funnel/` | FlussoP1 breakdown, tagging, per-flusso metrics |
 | `logs/` | Per-run log files (gitignored) |
 
 ## Setup
@@ -50,10 +53,31 @@ The token needs the `DTAQLAccess` (User sessions) scope.
 
 ## CLI usage
 
+Fetch one calendar day (24h, Europe/Rome by default):
+
 ```bash
 python3 main.py \
-  --start 2026-07-13T09:00:00+02:00 \
-  --end 2026-07-13T10:00:00+02:00
+  --start 2026-07-21T00:00:00+02:00 \
+  --end 2026-07-22T00:00:00+02:00 \
+  --build-flows
+```
+
+Fetch and write actions only:
+
+```bash
+python3 main.py --start 2026-07-21T00:00:00+02:00 --end 2026-07-22T00:00:00+02:00
+```
+
+Rebuild flows from an existing actions Parquet:
+
+```bash
+python3 main.py --input output/user_actions_2026-07-21.parquet --build-flows
+```
+
+Rebuild flows from cached action chunks (e.g. after a partial fetch):
+
+```bash
+python3 build_flows.py --cache-dir .cache/usql --stem 2026-07-21
 ```
 
 Useful options:
@@ -62,14 +86,38 @@ Useful options:
 |------|---------|
 | `--force` | Ignore Parquet cache and re-fetch |
 | `--chunk-size N` | Session ids per actions query (default 40) |
+| `--build-flows` | Run funnel reconstruction and write flow Parquets |
+| `--input PATH` | Skip fetch; read actions from Parquet |
 | `--log-dir DIR` | Log directory (default `logs/`) |
 | `--cache-dir DIR` | Override cache root (default `.cache/usql`) |
 
 Pipeline:
 
-1. Discovery query (identified users + name prefixes), cached as `discovery`.
+1. Discovery query (tagged users + name prefixes), cached as `discovery`.
 2. Session ids split into chunks; each chunk fetches actions and is cached.
-3. Results are concatenated and de-duplicated in memory for the run summary.
+3. Results are concatenated and de-duplicated.
+4. With `--build-flows`: `funnel.reconstruct_flows()` writes `flows_*`,
+   `matched_actions_*`, and `step_breakdown_*` under `output/`.
+
+## Funnel reconstruction
+
+The `funnel/` package ports the faithful FlussoP1 breakdown (C#
+`StepBreakdownProcessor`). It assumes:
+
+- Every action row has a Dynatrace **user tag** (`userId`); discovery already
+  filters `usersession.userId IS NOT NULL`.
+- Aggregation is per **userId** (not `sessionId`); a flusso may span sessions.
+- `flusso_id` day bucketing uses `FUNNEL_DAY_TZ` in `config.py` (default
+  `Europe/Rome`) for 24h calendar-day windows.
+
+```python
+from funnel import reconstruct_flows
+
+result = reconstruct_flows(actions_df)
+result.flows          # one row per emission attempt
+result.matched        # actions tagged with flusso_id / step_index
+result.step_breakdown # one row per flusso × funnel step
+```
 
 Logs (under `logs/`):
 
@@ -112,9 +160,7 @@ wm = cache.get_watermark(query)
 
 Cache files live under `.cache/usql/` (gitignored).
 
-## Typical next steps
+## Splunk ingest (planned)
 
-1. Discover session ids for the desired window.
-2. Chunk ids and call `session_actions_query(ids, ACTION_COLUMNS)`.
-3. Fetch actions (with time splitting / chunking as needed).
-4. Apply funnel / business filters in Python on the full action set.
+`splunk_ingest` under `test_porting/` will be wired to `funnel.reconstruct_flows()`
+once the continuous 24h pipeline is stable.
