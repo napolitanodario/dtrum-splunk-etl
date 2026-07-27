@@ -24,8 +24,13 @@ from utils import iso_string_to_timestamp_ms_utc
 log = logging.getLogger("usat")
 
 LOG_DIR = Path("logs")
+OUTPUT_DIR = Path("output")
 # Sessions per actions query: keeps URL size and LIMIT 5000 headroom.
 DEFAULT_CHUNK_SIZE = 40
+# First full-day smoke run defaults (Europe/Rome).
+DEFAULT_START = "2026-07-21T09:00:00+02:00"
+DEFAULT_END = "2026-07-21T18:00:00+02:00"
+DEFAULT_OUTPUT = OUTPUT_DIR / "user_actions_2026-07-21_09-18.parquet"
 
 
 def setup_logging(log_dir: Path) -> tuple[Path, Path]:
@@ -77,13 +82,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--start",
-        required=True,
-        help="Range start ISO-8601, e.g. 2026-07-13T09:00:00+02:00",
+        default=DEFAULT_START,
+        help=f"Range start ISO-8601 (default: {DEFAULT_START})",
     )
     parser.add_argument(
         "--end",
-        required=True,
-        help="Range end ISO-8601, e.g. 2026-07-13T10:00:00+02:00",
+        default=DEFAULT_END,
+        help=f"Range end ISO-8601 (default: {DEFAULT_END})",
     )
     parser.add_argument(
         "--force",
@@ -107,6 +112,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help="Override Parquet cache directory (default: .cache/usql)",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT,
+        help=f"Output Parquet path for all fetched actions (default: {DEFAULT_OUTPUT})",
     )
     return parser.parse_args(argv)
 
@@ -243,9 +254,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         log.exception("ETL aborted due to an error")
         return 1
 
+    if actions.empty:
+        log.warning("No actions to write")
+        print("action_rows=0")
+        print(f"log={run_log}")
+        print(f"issues_log={issues_log}")
+        return 0
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    actions.to_parquet(args.output, index=False, compression="zstd")
+    log.info("Wrote %s rows=%d", args.output, len(actions))
+
     print(f"action_rows={len(actions)}")
-    if not actions.empty and "sessionId" in actions.columns:
+    if "sessionId" in actions.columns:
         print(f"sessions={actions['sessionId'].nunique()}")
+    print(f"output={args.output}")
     print(f"log={run_log}")
     print(f"issues_log={issues_log}")
     return 0

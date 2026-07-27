@@ -18,6 +18,9 @@ venv/
 # Run logs
 logs/
 
+# ETL output artifacts
+output/
+
 # Generated / scratch data
 *.csv
 *.parquet

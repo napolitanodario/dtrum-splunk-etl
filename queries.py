@@ -66,10 +66,13 @@ def session_actions_query(
         session_ids: Iterable[str],
         columns: Mapping[str, str],
 ) -> str:
-    """All actions for the given sessions, ordered by startTime ascending.
+    """Actions for the given sessions in the current adaptive time window.
 
-    LIMIT 5000 matches the table API row cap. Callers with many sessions or
-    dense actions should chunk session_ids and/or rely on time splitting.
+    Filters on useraction.startTime via {start_ms}/{end_ms} so the client's
+    window shrink actually reduces rows (API timeframe alone is on the
+    session and would otherwise return whole-session action histories).
+
+    LIMIT 5000 matches the table API row cap.
     """
     ids = _quote_list(session_ids)
     select_list = _select_list(columns)
@@ -78,6 +81,8 @@ SELECT
   {select_list}
 FROM useraction
 WHERE usersession.userSessionId IN ({ids})
+  AND useraction.startTime >= {{start_ms}}
+  AND useraction.startTime < {{end_ms}}
 ORDER BY startTime ASC
 LIMIT 5000
 """.strip()
