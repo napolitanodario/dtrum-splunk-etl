@@ -11,8 +11,13 @@ from typing import Iterable, Sequence
 
 import pandas as pd
 
-from cache import UsqlCache
-from client import PAGE_SIZE, DynatraceUSQLClient
+from cache import UsqlCache, day_key_from_ms
+from client import (
+    ACTIONS_INITIAL_WINDOW_MIN,
+    INITIAL_WINDOW_MIN,
+    PAGE_SIZE,
+    DynatraceUSQLClient,
+)
 from config import (
     ACTION_COLUMNS,
     DISCOVERY_NAME_PREFIXES,
@@ -98,6 +103,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=f"Session ids per actions query (default: {DEFAULT_CHUNK_SIZE})",
     )
     parser.add_argument(
+        "--actions-window-min",
+        type=int,
+        default=ACTIONS_INITIAL_WINDOW_MIN,
+        help=(
+            f"Initial adaptive time window for action fetches in minutes "
+            f"(default: {ACTIONS_INITIAL_WINDOW_MIN}; discovery stays at {INITIAL_WINDOW_MIN})"
+        ),
+    )
+    parser.add_argument(
         "--log-dir",
         type=Path,
         default=LOG_DIR,
@@ -107,7 +121,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--cache-dir",
         type=Path,
         default=None,
-        help="Override Parquet cache directory (default: .cache/usql)",
+        help="Override Parquet cache root directory (default: .cache/usql)",
+    )
+    parser.add_argument(
+        "--keep-staging",
+        action="store_true",
+        help="After a successful fetch, keep _staging/ chunk files (default: remove)",
     )
     parser.add_argument(
         "--output",
@@ -149,6 +168,8 @@ def _load_or_fetch(
         label: str,
         page_size: int,
         force: bool,
+        *,
+        initial_window_min: int = INITIAL_WINDOW_MIN,
 ) -> pd.DataFrame:
     """Return cached DataFrame or fetch from Dynatrace and store it."""
     if not force:
@@ -157,13 +178,17 @@ def _load_or_fetch(
             log.info("Cache hit label=%s rows=%d", label, len(cached))
             return cached
 
-    log.info("Fetching label=%s page_size=%d", label, page_size)
+    log.info(
+        "Fetching label=%s page_size=%d initial_window_min=%d",
+        label, page_size, initial_window_min,
+    )
     try:
         df = client.fetch(
             query=query,
             start_ms=start_ms,
             end_ms=end_ms,
             page_size=page_size,
+            initial_window_min=initial_window_min,
         )
     except RuntimeError as exc:
         log.error("Fetch failed label=%s: %s", label, exc)
@@ -181,21 +206,37 @@ def run(
         force: bool = False,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         cache_dir: Path | None = None,
+        keep_staging: bool = False,
+        actions_window_min: int = ACTIONS_INITIAL_WINDOW_MIN,
 ) -> pd.DataFrame:
     """Discovery then chunked session-actions download with caching."""
     if end_ms <= start_ms:
         raise ValueError("end must be after start")
     if chunk_size < 1:
         raise ValueError("chunk-size must be >= 1")
+    if actions_window_min < 1:
+        raise ValueError("actions-window-min must be >= 1")
+
+    day = day_key_from_ms(start_ms)
+    cache_root = cache_dir if cache_dir is not None else Path(".cache/usql")
+    cache = UsqlCache(day, root=cache_root)
+    if force:
+        cache.invalidate()
 
     env_id, api_token = get_credentials()
     client = DynatraceUSQLClient(env_id, api_token)
-    cache = UsqlCache(cache_dir) if cache_dir is not None else UsqlCache()
 
     log.info(
-        "ETL start start_ms=%s end_ms=%s force=%s chunk_size=%s",
-        start_ms, end_ms, force, chunk_size,
+        "ETL start day=%s start_ms=%s end_ms=%s force=%s chunk_size=%s "
+        "actions_window_min=%s cache=%s",
+        day, start_ms, end_ms, force, chunk_size, actions_window_min, cache.day_dir,
     )
+
+    if not force:
+        consolidated = cache.get_actions(start_ms, end_ms)
+        if consolidated is not None:
+            log.info("Using consolidated actions cache (%d rows)", len(consolidated))
+            return consolidated
 
     d_query = discovery_query(DISCOVERY_NAME_PREFIXES)
     sessions_df = _load_or_fetch(
@@ -203,6 +244,7 @@ def run(
         label="discovery",
         page_size=PAGE_SIZE,
         force=force,
+        initial_window_min=INITIAL_WINDOW_MIN,
     )
     if sessions_df.empty or "sessionId" not in sessions_df.columns:
         log.warning("Discovery returned no sessions for this range")
@@ -222,6 +264,7 @@ def run(
             label=label,
             page_size=PAGE_SIZE,
             force=force,
+            initial_window_min=actions_window_min,
         )
         if not part.empty:
             parts.append(part)
@@ -240,6 +283,9 @@ def run(
         len(actions),
         actions["sessionId"].nunique() if "sessionId" in actions else 0,
         actions["userId"].nunique() if "userId" in actions else 0,
+    )
+    cache.consolidate_actions(
+        actions, start_ms, end_ms, clear_staging=not keep_staging,
     )
     cache.set_watermark(d_query, end_ms)
     return actions
@@ -285,6 +331,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 force=args.force,
                 chunk_size=args.chunk_size,
                 cache_dir=args.cache_dir,
+                keep_staging=args.keep_staging,
+                actions_window_min=args.actions_window_min,
             )
             source_path = args.output
     except Exception:

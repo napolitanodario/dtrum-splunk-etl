@@ -29,7 +29,13 @@ def main(argv: list[str] | None = None) -> int:
         "--cache-dir",
         type=Path,
         default=None,
-        help=f"Load actions_*.parquet chunks from cache (default: {DEFAULT_CACHE})",
+        help=f"USQL cache root (default: {DEFAULT_CACHE})",
+    )
+    parser.add_argument(
+        "--day",
+        type=str,
+        default=None,
+        help="Calendar day YYYY-MM-DD under cache root (default: stem if set)",
     )
     parser.add_argument(
         "--stem",
@@ -54,9 +60,10 @@ def main(argv: list[str] | None = None) -> int:
         raw = pd.read_parquet(args.input)
     else:
         cache_dir = args.cache_dir or DEFAULT_CACHE
-        raw = load_action_chunks(cache_dir)
+        day = args.day or args.stem
+        raw = load_action_chunks(cache_dir, day=day)
         if raw.empty:
-            log.error("No action chunks found under %s", cache_dir)
+            log.error("No cached actions under %s (day=%s)", cache_dir, day)
             return 1
 
     log.info("Loaded %d action rows", len(raw))

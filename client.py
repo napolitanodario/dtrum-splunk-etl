@@ -18,8 +18,9 @@ log = logging.getLogger("usat")
 
 # Hard cap on rows returned by a single /table response.
 PAGE_SIZE = 5_000
-# Starting window size for the adaptive walk (minutes).
-INITIAL_WINDOW_MIN = 10
+# Starting window size for the adaptive time walk (minutes).
+INITIAL_WINDOW_MIN = 10  # discovery and other dense queries
+ACTIONS_INITIAL_WINDOW_MIN = 60  # session actions (selective sessionId IN filter)
 # Smallest window before fetch fails instead of returning incomplete data.
 MIN_WINDOW_MS = 1_000
 RETRY_ATTEMPTS = 3

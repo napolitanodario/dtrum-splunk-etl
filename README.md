@@ -12,8 +12,8 @@ it for downstream analysis (e.g. FlussoP1 funnel filtering, Splunk export).
    adaptive window so results are not truncated or sampled.
 4. **Funnel reconstruction** – rebuild FlussoP1 emission attempts per tagged
    `userId` from the raw action stream (`funnel/` package).
-5. **Local cache** – optional Parquet cache with provenance sidecars and a
-   per-query watermark for continuous runs.
+5. **Local cache** – two-tier Parquet cache per calendar day: staging chunks during
+   fetch, consolidated `actions.parquet` after a complete run; watermark per day.
 
 ## Layout
 
@@ -74,10 +74,10 @@ Rebuild flows from an existing actions Parquet:
 python3 main.py --input output/user_actions_2026-07-21.parquet --build-flows
 ```
 
-Rebuild flows from cached action chunks (e.g. after a partial fetch):
+Rebuild flows from cache (consolidated or staging):
 
 ```bash
-python3 build_flows.py --cache-dir .cache/usql --stem 2026-07-21
+python3 build_flows.py --day 2026-07-21 --stem 2026-07-21
 ```
 
 Useful options:
@@ -90,12 +90,15 @@ Useful options:
 | `--input PATH` | Skip fetch; read actions from Parquet |
 | `--log-dir DIR` | Log directory (default `logs/`) |
 | `--cache-dir DIR` | Override cache root (default `.cache/usql`) |
+| `--keep-staging` | Keep `_staging/` chunks after successful fetch |
+| `--day YYYY-MM-DD` | Day bucket for `build_flows` / Splunk export from cache |
 
 Pipeline:
 
-1. Discovery query (tagged users + name prefixes), cached as `discovery`.
-2. Session ids split into chunks; each chunk fetches actions and is cached.
-3. Results are concatenated and de-duplicated.
+1. Discovery query (tagged users + name prefixes), cached as `discovery.parquet`.
+2. Session ids split into chunks; each chunk is fetched into `_staging/`.
+3. On success: chunks are merged into `actions.parquet` and staging is cleared
+   (unless `--keep-staging`).
 4. With `--build-flows`: `funnel.reconstruct_flows()` writes `flows_*`,
    `matched_actions_*`, and `step_breakdown_*` under `output/`.
 
@@ -145,20 +148,31 @@ Use `page_size=5000` (default) for discovery and actions so truncation matches
 
 ## Cache usage (optional)
 
-```python
-from cache import UsqlCache
+Per-day layout under `.cache/usql/{YYYY-MM-DD}/`:
 
-cache = UsqlCache()
-df = cache.get(query, start_ms, end_ms, label="discovery")
+- `discovery.parquet` – discovery result
+- `actions.parquet` – consolidated actions (written when fetch completes)
+- `_staging/` – per-chunk files during fetch (removed after consolidate unless `--keep-staging`)
+
+```python
+from cache import UsqlCache, day_key_from_ms
+
+day = day_key_from_ms(start_ms)
+cache = UsqlCache(day)
+df = cache.get_discovery(query, start_ms, end_ms)
 if df is None:
     df = client.fetch(query, start_ms, end_ms, page_size=5000)
-    cache.put(df, query, start_ms, end_ms, label="discovery")
+    cache.put_discovery(df, query, start_ms, end_ms)
 
-# Continuous ETL: resume after the last covered end_ms
+# After all action chunks: cache.consolidate_actions(actions, start_ms, end_ms)
 wm = cache.get_watermark(query)
 ```
 
-Cache files live under `.cache/usql/` (gitignored).
+Legacy flat files under `.cache/usql/` can be moved with:
+
+```bash
+python3 -c "from cache import migrate_legacy_flat_cache; print(migrate_legacy_flat_cache())"
+```
 
 ## Splunk ingest (planned)
 

@@ -39,13 +39,17 @@ def reconstruct_flows(raw: pd.DataFrame) -> FlowResult:
     )
 
 
-def load_action_chunks(cache_dir: Path, pattern: str = "actions_*.parquet") -> pd.DataFrame:
-    """Load and merge cached action chunk Parquet files from a USQL cache directory."""
-    files = sorted(cache_dir.glob(pattern))
-    if not files:
-        return pd.DataFrame()
-    parts = [pd.read_parquet(p) for p in files]
-    return pd.concat(parts, ignore_index=True).drop_duplicates()
+def load_action_chunks(
+        cache_dir: Path,
+        pattern: str = "actions_*.parquet",
+        *,
+        day: str | None = None,
+) -> pd.DataFrame:
+    """Load cached actions (consolidated, staging, or legacy flat layout)."""
+    from cache import load_cached_actions
+
+    _ = pattern  # kept for backward-compatible call sites; resolution is in cache.py
+    return load_cached_actions(cache_dir, day=day)
 
 
 def write_flow_outputs(

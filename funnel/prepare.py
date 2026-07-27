@@ -1,8 +1,12 @@
 """Turn raw Dynatrace action rows into a normalised frame for funnel breakdown."""
 
+import logging
+
 import pandas as pd
 
 from funnel.normalize import normalize_action_name
+
+log = logging.getLogger("usat")
 
 REQUIRED_COLUMNS = [
     "name", "type", "duration", "startTime", "endTime",
@@ -27,8 +31,9 @@ _NUMERIC = [
 def normalize_actions(raw: pd.DataFrame) -> pd.DataFrame:
     """Rename columns, coerce types, add rowId/actionKey, sort chronologically.
 
-  Every row must carry a Dynatrace user tag (userId). Sessions without a tag
-  are excluded upstream by discovery; this layer fails fast if userId is absent.
+    Rows without a Dynatrace user tag (userId) are dropped with a warning.
+    Discovery already filters tagged sessions; occasional untagged action rows
+    can still appear in session-action fetches.
     """
     raw = raw.reset_index(drop=True)
     missing = [c for c in REQUIRED_COLUMNS if c not in raw.columns]
@@ -36,11 +41,12 @@ def normalize_actions(raw: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"Input is missing required columns: {missing}")
 
     tagged = raw["userId"].notna() & (raw["userId"].astype(str).str.strip() != "")
-    if not tagged.all():
-        n_bad = int((~tagged).sum())
-        raise ValueError(
-            f"{n_bad} action row(s) lack userId; only tagged users are supported."
-        )
+    n_bad = int((~tagged).sum())
+    if n_bad:
+        log.warning("Dropped %d action row(s) without userId", n_bad)
+        raw = raw.loc[tagged].reset_index(drop=True)
+    if raw.empty:
+        raise ValueError("No tagged action rows remain after dropping rows without userId.")
 
     df = raw.rename(columns=_RENAME)
 
@@ -52,7 +58,7 @@ def normalize_actions(raw: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].fillna("").astype(str)
 
-    df["rowId"] = range(len(raw))
+    df["rowId"] = range(len(df))
     df["actionStartDt"] = pd.to_datetime(df["actionStartTime"], unit="ms", utc=True)
     df["actionEndDt"] = pd.to_datetime(df["actionEndTime"], unit="ms", utc=True)
     df["durationSec"] = df["actionDuration"] / 1000.0
