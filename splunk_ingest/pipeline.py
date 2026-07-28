@@ -75,7 +75,7 @@ def process_day(
     return counts
 
 
-def _latest_settled_day(cfg: IngestConfig) -> date:
+def latest_settled_day(cfg: IngestConfig) -> date:
     """Last funnel calendar day whose end + lag is already in the past."""
     tz = ZoneInfo(FUNNEL_DAY_TZ)
     now_local = datetime.now(timezone.utc).astimezone(tz)
@@ -94,7 +94,7 @@ def run_incremental(
     """Ship every settled day from the watermark (exclusive) up to latest settled."""
     state = State(cfg.state_dir)
     hec = None if dry_run else _hec(cfg)
-    latest = _latest_settled_day(cfg)
+    latest = latest_settled_day(cfg)
 
     wm = state.last_settled_day()
     if wm:

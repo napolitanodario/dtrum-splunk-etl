@@ -27,6 +27,8 @@ it for downstream funnel analysis and Splunk export.
 | `utils.py` | ISO datetime to UTC epoch ms |
 | `main.py` | CLI: fetch actions and optionally build flows |
 | `build_flows.py` | CLI: reconstruct flows from Parquet or cache chunks |
+| `daily_run/` | Unattended daily orchestrator (fetch → ingest → prune) |
+| `run_daily.bat` | Thin Windows wrapper for Task Scheduler |
 | `funnel/` | Funnel breakdown, tagging, per-flusso metrics |
 | `funnel/*.example.py` | Committable stubs for private funnel definitions / matcher |
 | `logs/` | Per-run log files (gitignored) |
@@ -162,6 +164,10 @@ Per-day layout under `.cache/usql/{YYYY-MM-DD}/`:
 - `actions.parquet` – consolidated actions (written when fetch completes)
 - `_staging/` – per-chunk files during fetch (removed after consolidate unless `--keep-staging`)
 
+Age-based cleanup of whole day folders is done by `daily_run` (`prune_usql_days` in
+`cache.py`) using `[cache] retention_days`. There is no automatic prune when running
+`main.py` alone.
+
 ```python
 from cache import UsqlCache, day_key_from_ms
 
@@ -196,3 +202,52 @@ python -m splunk_ingest run --config splunk_ingest/prod.toml
 ```
 
 See [splunk_ingest/README.md](splunk_ingest/README.md).
+
+## Windows unattended daily run
+
+For a once-per-day job on Windows, use the Python orchestrator plus the thin BAT
+wrapper (no date logic in the BAT).
+
+**Prerequisites on the host**
+
+- Python 3.11+ and a project `.venv` with `pip install -r requirements.txt`
+- Local secrets/config: `.env`, `config.py`, private `funnel/*.py`, `splunk_ingest/prod.toml`
+- Network access to Dynatrace USQL and Splunk HEC
+- Restrict NTFS ACL on `.env` and `prod.toml` to the service account
+
+**Manual smoke**
+
+```bat
+run_daily.bat --dry-run --skip-fetch
+run_daily.bat
+```
+
+Or from an activated shell:
+
+```bash
+python -m daily_run --config splunk_ingest/prod.toml --dry-run --skip-fetch
+python -m daily_run --config splunk_ingest/prod.toml
+```
+
+The orchestrator:
+
+1. Computes settled day(s) in `FUNNEL_DAY_TZ` (Europe/Rome) using `settlement_lag_hours`
+2. Fetches any missing `.cache/usql/{day}/` windows since the Splunk watermark
+3. Runs incremental Splunk ingest (`python -m splunk_ingest run` semantics)
+4. After a successful ingest, prunes USQL day folders older than
+   `[cache] retention_days` (default **14**; `0` = never). Days still ahead of the
+   Splunk watermark are never deleted. `.cache/splunk_state/` is never pruned.
+   At ~40 MB/day, 14 days ≈ 0.5–0.6 GB.
+
+Useful flags: `--skip-fetch`, `--skip-ingest`, `--skip-prune`,
+`--cache-retention-days N`, `--force-fetch`, `--day YYYY-MM-DD`.
+
+**Task Scheduler**
+
+1. Action: `run_daily.bat` (or full path to it)
+2. Start in: project root (folder that contains `run_daily.bat`)
+3. Trigger: daily at **≥ 07:00 Europe/Rome** (default lag is 6h after midnight)
+4. Run whether user is logged on or not (service account with network rights)
+5. On failure: non-zero exit → Task History / Last Run Result; details in `logs/daily_run_*.log`
+
+Do not use “highest privileges” unless required by proxy/policy.

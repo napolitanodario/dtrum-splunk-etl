@@ -19,7 +19,7 @@ import hashlib
 import json
 import logging
 import shutil
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -333,6 +333,73 @@ class UsqlCache:
 
     def _watermark_path(self, query: str) -> Path:
         return self.day_dir / f"{_query_fingerprint(query)}.watermark.json"
+
+
+def _dir_size_bytes(path: Path) -> int:
+    total = 0
+    for child in path.rglob("*"):
+        if child.is_file():
+            try:
+                total += child.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def prune_usql_days(
+    root: Path,
+    *,
+    keep_before: date,
+    protect_after: date | None = None,
+    dry_run: bool = False,
+) -> list[dict]:
+    """Remove USQL day directories strictly older than ``keep_before``.
+
+    Day folders are named ``YYYY-MM-DD``. Never touches Splunk state dirs.
+
+    If ``protect_after`` is set, also refuse to delete any day strictly after
+    that date (unshipped / still needed for catch-up). A day equal to
+    ``protect_after`` is considered shipped and may be pruned by age.
+
+    Returns a list of dicts: ``{day, path, bytes, deleted}``.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return []
+
+    removed: list[dict] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        try:
+            day = date.fromisoformat(child.name)
+        except ValueError:
+            continue
+
+        if day >= keep_before:
+            continue
+        if protect_after is not None and day > protect_after:
+            log.info(
+                "Skip prune %s (after protect_after=%s, unshipped)",
+                child.name,
+                protect_after.isoformat(),
+            )
+            continue
+
+        size = _dir_size_bytes(child)
+        entry = {
+            "day": child.name,
+            "path": str(child),
+            "bytes": size,
+            "deleted": not dry_run,
+        }
+        if dry_run:
+            log.info("Would prune USQL day %s (%d bytes)", child.name, size)
+        else:
+            shutil.rmtree(child)
+            log.info("Pruned USQL day %s (%d bytes)", child.name, size)
+        removed.append(entry)
+    return removed
 
 
 def resolve_day_dir(cache_root: Path, day: str | None = None) -> Path:

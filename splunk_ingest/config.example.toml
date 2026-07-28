@@ -19,6 +19,7 @@ settlement_lag_hours = 6                     # a day ships only once its end + l
 
 [cache]
 dir = ".cache/usql"
+retention_days = 14                          # 0 = never prune USQL day folders
 
 [state]
 dir = ".cache/splunk_state"

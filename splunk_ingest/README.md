@@ -31,8 +31,13 @@ python -m splunk_ingest backfill --since 2026-06-22 --until 2026-06-22 --config 
 ## Use
 
 ```bash
-# Incremental (for cron): ships every settled day since the watermark.
+# Incremental (for cron / Task Scheduler via daily_run): ships every settled day since the watermark.
 python -m splunk_ingest run --config splunk_ingest/prod.toml
+
+# Prefer the full unattended chain on Windows:
+#   run_daily.bat
+# or: python -m daily_run --config splunk_ingest/prod.toml
+# See root README “Windows unattended daily run”.
 
 # Historical load from cache.
 python -m splunk_ingest backfill --since 2026-06-15 --until 2026-06-22 --config splunk_ingest/prod.toml
@@ -47,3 +52,4 @@ python -m splunk_ingest backfill --since 2026-06-22 --until 2026-06-22 --config 
 - A day ships only after settlement (`day end + settlement_lag_hours`).
 - Ledger under `state_dir` (default `.cache/splunk_state/`): `watermark.json`, `days_ledger.parquet`.
 - Deterministic `eventId` (`f:{flussoId}`): on partial re-run use `| dedup eventId` Splunk-side.
+- USQL day cache retention is configured via `[cache] retention_days` (default 14) and applied by `daily_run` after a successful ingest; Splunk state is never pruned.
