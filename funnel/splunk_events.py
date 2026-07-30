@@ -103,29 +103,44 @@ def _session_enrichment(session: pd.DataFrame) -> dict[str, dict]:
 
 
 def iter_flusso_events(result: FlowResult) -> Iterator[dict[str, Any]]:
-    """Yield one lean Splunk v2 event dict per reconstructed flusso."""
+    """Yield one lean Splunk v2 event dict per reconstructed flusso.
+
+    Iterates ``matched`` grouped by ``flusso_id`` (one sort + groupby) instead of
+    materializing a dict of per-flusso DataFrames.
+    """
     flows = result.flows
     matched = result.matched
     breakdown = result.step_breakdown
     if flows is None or flows.empty:
         return
+    if matched is None or matched.empty:
+        return
 
     enrich = _session_enrichment(result.session)
 
-    matched_by_fid = {
-        fid: g.sort_values(["step_index", "actionStartTime"])
-        for fid, g in matched.groupby("flusso_id")
-    } if matched is not None and not matched.empty else {}
+    # Light index: one namedtuple per flusso (not a DataFrame slice).
+    flow_by_id = {row.flusso_id: row for row in flows.itertuples(index=False)}
 
-    breakdown_by_fid = {
-        fid: g.sort_values("step_index")
-        for fid, g in breakdown.groupby("flusso_id")
-    } if breakdown is not None and not breakdown.empty else {}
+    # Light step metadata: flusso_id -> step_index -> {stepLabel, pagina}.
+    step_info_by_fid: dict[Any, dict[int, dict]] = {}
+    if breakdown is not None and not breakdown.empty:
+        for fid, bg in breakdown.groupby("flusso_id", sort=False):
+            step_info_by_fid[fid] = {
+                int(sr.step_index): {
+                    "stepLabel": _s(sr.label),
+                    "pagina": _s(getattr(sr, "pagina", None)),
+                }
+                for sr in bg.itertuples(index=False)
+            }
 
-    for r in flows.itertuples(index=False):
-        fid = r.flusso_id
-        g = matched_by_fid.get(fid)
-        if g is None or g.empty:
+    matched = matched.sort_values(
+        ["flusso_id", "step_index", "actionStartTime"],
+        kind="mergesort",
+    )
+
+    for fid, g in matched.groupby("flusso_id", sort=False):
+        r = flow_by_id.get(fid)
+        if r is None:
             continue
 
         # Deduplicate occurrences for root metrics (sessionId + startTime).
@@ -153,25 +168,18 @@ def iter_flusso_events(result: FlowResult) -> Iterator[dict[str, Any]]:
         ]
 
         # Global seq by chronological order of first occurrence.
-        occ_sorted = occ.sort_values("actionStartTime")
+        occ_sorted = occ.sort_values("actionStartTime", kind="mergesort")
         seq_map: dict[tuple, int] = {}
         for seq, row in enumerate(occ_sorted.itertuples(index=False), start=1):
             seq_map[(str(row.sessionId), int(row.actionStartTime))] = seq
 
-        steps_meta = breakdown_by_fid.get(fid)
-        step_info: dict[int, dict] = {}
-        if steps_meta is not None:
-            for sr in steps_meta.itertuples(index=False):
-                step_info[int(sr.step_index)] = {
-                    "stepLabel": _s(sr.label),
-                    "pagina": _s(sr.pagina),
-                }
+        step_info = step_info_by_fid.get(fid, {})
 
         steps_out: list[dict] = []
         for step_index, sg in g.groupby("step_index", sort=True):
             si = int(step_index)
             info = step_info.get(si, {})
-            sg = sg.sort_values("actionStartTime")
+            sg = sg.sort_values("actionStartTime", kind="mergesort")
             # One entry per occurrence within the step.
             seen: set[tuple] = set()
             actions_out: list[dict] = []

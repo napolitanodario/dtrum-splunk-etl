@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from config import FUNNEL_DAY_TZ
+from utils import atomic_write_parquet, atomic_write_text
 
 log = logging.getLogger("usat")
 
@@ -71,7 +72,7 @@ def _write_meta(
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "label": label,
     }
-    path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(meta, indent=2) + "\n")
 
 
 def _read_meta(meta_path: Path) -> dict | None:
@@ -118,7 +119,7 @@ class UsqlCache:
     ) -> Path:
         parquet_path = self.day_dir / "discovery.parquet"
         meta_path = self.day_dir / "discovery.meta.json"
-        df.to_parquet(parquet_path, index=False, compression="zstd")
+        atomic_write_parquet(df, parquet_path, index=False, compression="zstd")
         _write_meta(
             meta_path,
             kind="discovery",
@@ -156,7 +157,7 @@ class UsqlCache:
     ) -> Path:
         parquet_path = self.day_dir / "actions.parquet"
         meta_path = self.day_dir / "actions.meta.json"
-        df.to_parquet(parquet_path, index=False, compression="zstd")
+        atomic_write_parquet(df, parquet_path, index=False, compression="zstd")
         _write_meta(
             meta_path,
             kind="actions",
@@ -207,7 +208,7 @@ class UsqlCache:
             label: str,
     ) -> Path:
         parquet_path, meta_path = self._chunk_paths(query, start_ms, end_ms, label)
-        df.to_parquet(parquet_path, index=False, compression="zstd")
+        atomic_write_parquet(df, parquet_path, index=False, compression="zstd")
         _write_meta(
             meta_path,
             kind="chunk",
@@ -290,7 +291,7 @@ class UsqlCache:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         path = self._watermark_path(query)
-        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(path, json.dumps(payload, indent=2) + "\n")
         log.info("Watermark day=%s query=%s end_ms=%s", self.day, _query_fingerprint(query), end_ms)
 
     # -- legacy flat API (delegates to day-scoped methods) ------------------------
@@ -400,6 +401,32 @@ def prune_usql_days(
             log.info("Pruned USQL day %s (%d bytes)", child.name, size)
         removed.append(entry)
     return removed
+
+
+def day_cache_status(cache_root: Path, day: str) -> str:
+    """Classify a USQL day folder for ingest watermark decisions.
+
+    Returns one of:
+    - ``"actions"``: consolidated ``actions.parquet`` present (may be 0 rows).
+      This is the completion marker written by a successful fetch.
+    - ``"empty"``: legacy confirmed-empty day (``discovery.parquet`` only, no
+      leftover staging chunks). Prefer writing empty ``actions.parquet`` going forward.
+    - ``"incomplete"``: no proof of a finished fetch — do **not** advance the
+      Splunk watermark (missing cache, failed/skipped fetch, or mid-fetch staging).
+    """
+    day_dir = Path(cache_root) / day
+    if (day_dir / "actions.parquet").is_file():
+        return "actions"
+
+    staging = day_dir / STAGING_DIRNAME
+    has_staging = staging.is_dir() and any(staging.glob("actions_*.parquet"))
+    if has_staging:
+        # Partial fetch: discovery may exist, but consolidate never ran.
+        return "incomplete"
+
+    if (day_dir / "discovery.parquet").is_file():
+        return "empty"
+    return "incomplete"
 
 
 def resolve_day_dir(cache_root: Path, day: str | None = None) -> Path:

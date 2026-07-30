@@ -9,6 +9,8 @@ from typing import Optional
 
 import pandas as pd
 
+from utils import atomic_write_parquet, atomic_write_text
+
 log = logging.getLogger("splunk_ingest")
 
 
@@ -27,7 +29,7 @@ class State:
         return None
 
     def set_last_settled_day(self, day: str) -> None:
-        self.watermark_path.write_text(json.dumps({"last_settled_day": day}))
+        atomic_write_text(self.watermark_path, json.dumps({"last_settled_day": day}))
 
     def shipped_days(self) -> set[str]:
         if self.ledger_path.exists():
@@ -44,4 +46,4 @@ class State:
             prev = pd.read_parquet(self.ledger_path)
             prev = prev[prev["day"].astype(str) != day]
             row = pd.concat([prev, row], ignore_index=True)
-        row.to_parquet(self.ledger_path, index=False)
+        atomic_write_parquet(row, self.ledger_path, index=False)

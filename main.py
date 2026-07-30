@@ -248,6 +248,11 @@ def run(
     )
     if sessions_df.empty or "sessionId" not in sessions_df.columns:
         log.warning("Discovery returned no sessions for this range")
+        # Empty consolidated actions = fetch completed with nothing to ship.
+        cache.consolidate_actions(
+            pd.DataFrame(), start_ms, end_ms, clear_staging=not keep_staging,
+        )
+        cache.set_watermark(d_query, end_ms)
         return pd.DataFrame()
 
     sessions_df = sessions_df.drop_duplicates(subset=["sessionId"])
@@ -275,6 +280,10 @@ def run(
 
     if not parts:
         log.warning("No user actions retrieved")
+        cache.consolidate_actions(
+            pd.DataFrame(), start_ms, end_ms, clear_staging=not keep_staging,
+        )
+        cache.set_watermark(d_query, end_ms)
         return pd.DataFrame()
 
     actions = pd.concat(parts, ignore_index=True).drop_duplicates()

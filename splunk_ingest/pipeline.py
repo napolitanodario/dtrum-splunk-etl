@@ -11,6 +11,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from cache import day_cache_status
 from config import FUNNEL_DAY_TZ
 from funnel.reconstruct import load_action_chunks, reconstruct_flows
 from funnel.splunk_events import SCHEMA_VERSION, iter_flusso_events
@@ -21,6 +22,9 @@ from .hec import HECClient
 from .state import State
 
 log = logging.getLogger("splunk_ingest")
+
+# Days that completed successfully enough to advance the incremental watermark.
+_WATERMARK_OK = frozenset({"ok", "empty"})
 
 
 def _hec(cfg: IngestConfig) -> HECClient:
@@ -43,34 +47,60 @@ def process_day(
     *,
     dry_run: bool = False,
 ) -> dict:
-    """Load cached actions for ``day``, reconstruct flussi, ship HEC envelopes."""
+    """Load cached actions for ``day``, reconstruct flussi, ship HEC envelopes.
+
+    Distinguishes confirmed-empty days from incomplete/failed cache:
+
+    - ``status="ok"``: events shipped (or dry-run counted).
+    - ``status="empty"``: fetch finished with zero actions (``discovery.parquet``
+      present); ledger may record 0 flussi; watermark may advance.
+    - incomplete cache raises ``RuntimeError`` — watermark must **not** advance.
+    """
     counts = {
         "day": day,
         "action_rows": 0,
         "flussi": 0,
         "schema_version": SCHEMA_VERSION,
+        "status": "ok",
     }
+
+    cache_status = day_cache_status(cfg.cache_dir, day)
+    if cache_status == "incomplete":
+        raise RuntimeError(
+            f"Day {day}: USQL cache incomplete under {cfg.cache_dir} "
+            f"(no actions.parquet completion marker; status={cache_status}). "
+            "Treat as failed/partial fetch — watermark will not advance."
+        )
 
     raw = load_action_chunks(cfg.cache_dir, day=day)
     if raw.empty:
-        log.info("Day %s: no cached actions under %s", day, cfg.cache_dir)
+        # Confirmed empty: discovery-only day, or an empty actions.parquet.
+        counts["status"] = "empty"
+        log.info(
+            "Day %s: confirmed empty (cache_status=%s, 0 action rows)",
+            day,
+            cache_status,
+        )
         if not dry_run:
             state.record_day(day, 0)
         return counts
 
     counts["action_rows"] = len(raw)
     result = reconstruct_flows(raw)
-    bodies = list(iter_flusso_events(result))
-    envelopes = list(wrap_flusso_events(bodies, cfg))
-    counts["flussi"] = len(envelopes)
+    del raw  # free the loaded Parquet frame before event materialization
+
+    # Stream bodies -> envelopes -> HEC batches; never hold the full day as a list.
+    envelopes = wrap_flusso_events(iter_flusso_events(result), cfg)
 
     if dry_run:
+        counts["flussi"] = sum(1 for _ in envelopes)
         log.info("DRY-RUN %s: %s", day, counts)
         return counts
 
     assert hec is not None
-    hec.send(envelopes)
-    state.record_day(day, len(envelopes))
+    n_sent = hec.send(envelopes)
+    counts["flussi"] = n_sent
+    state.record_day(day, n_sent)
     log.info("Shipped %s: %s", day, counts)
     return counts
 
@@ -112,9 +142,19 @@ def run_incremental(
     results = []
     d = start_day
     while d <= latest:
-        results.append(process_day(cfg, state, hec, d.isoformat(), dry_run=dry_run))
-        if not dry_run:
+        day_result = process_day(cfg, state, hec, d.isoformat(), dry_run=dry_run)
+        results.append(day_result)
+        # Never advance past a failed/incomplete day. process_day raises on
+        # incomplete cache; only ok/empty may move the watermark.
+        if not dry_run and day_result.get("status") in _WATERMARK_OK:
             state.set_last_settled_day(d.isoformat())
+        elif not dry_run:
+            log.error(
+                "Refusing to advance watermark past %s (status=%s)",
+                d.isoformat(),
+                day_result.get("status"),
+            )
+            break
         d += timedelta(days=1)
     return results
 

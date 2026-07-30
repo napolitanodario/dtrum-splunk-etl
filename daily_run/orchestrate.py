@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from cache import prune_usql_days
+from cache import day_cache_status, prune_usql_days
 from config import FUNNEL_DAY_TZ
 from main import run as fetch_usql_day
 from splunk_ingest.config import IngestConfig
@@ -65,7 +65,13 @@ def resolve_day_range(
 
 
 def actions_cache_ready(cache_dir: Path, day: date) -> bool:
-    return (Path(cache_dir) / day.isoformat() / "actions.parquet").is_file()
+    """True when the day has consolidated actions (including empty 0-row file)."""
+    return day_cache_status(cache_dir, day.isoformat()) == "actions"
+
+
+def fetch_day_complete(cache_dir: Path, day: date) -> bool:
+    """True when fetch finished: actions present, or legacy discovery-only empty day."""
+    return day_cache_status(cache_dir, day.isoformat()) in ("actions", "empty")
 
 
 def fetch_missing_days(
@@ -75,13 +81,19 @@ def fetch_missing_days(
     *,
     force_fetch: bool = False,
 ) -> list[str]:
-    """Fetch any day in [start, end] missing consolidated actions (or forced)."""
+    """Fetch any day in [start, end] missing a completed fetch (or forced).
+
+    Completion means ``actions.parquet`` exists (possibly 0 rows after an empty
+    discovery), or a legacy discovery-only empty day. Incomplete cache after
+    fetch raises — never treat a failed/partial fetch as empty.
+    """
     fetched: list[str] = []
     d = start
     while d <= end:
-        need = force_fetch or not actions_cache_ready(cfg.cache_dir, d)
+        need = force_fetch or not fetch_day_complete(cfg.cache_dir, d)
         if not need:
-            log.info("Cache hit for %s", d.isoformat())
+            status = day_cache_status(cfg.cache_dir, d.isoformat())
+            log.info("Cache hit for %s (status=%s)", d.isoformat(), status)
         else:
             start_ms, end_ms = day_window_ms(d)
             log.info(
@@ -96,14 +108,17 @@ def fetch_missing_days(
                 force=force_fetch,
                 cache_dir=Path(cfg.cache_dir),
             )
-            if not actions_cache_ready(cfg.cache_dir, d):
-                # Empty discovery is OK (no actions.parquet may mean empty day).
-                # Consolidate only runs when there are actions; tolerate empty.
-                day_dir = Path(cfg.cache_dir) / d.isoformat()
-                if not day_dir.exists():
-                    raise RuntimeError(f"Fetch produced no cache dir for {d.isoformat()}")
-                log.warning(
-                    "Day %s has no actions.parquet after fetch (empty day?)",
+            status = day_cache_status(cfg.cache_dir, d.isoformat())
+            if status == "incomplete":
+                raise RuntimeError(
+                    f"Fetch for {d.isoformat()} left incomplete cache under "
+                    f"{cfg.cache_dir / d.isoformat()} "
+                    "(no actions.parquet completion marker). "
+                    "Refusing to treat as empty day."
+                )
+            if status == "empty":
+                log.info(
+                    "Day %s: confirmed empty after fetch (legacy discovery-only)",
                     d.isoformat(),
                 )
             fetched.append(d.isoformat())
