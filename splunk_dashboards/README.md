@@ -18,6 +18,7 @@ This directory contains import-ready Splunk Dashboard Studio JSON files based on
 - `sourcetype`: `dtrum:funnel:flusso` (or your configured prefix + `:flusso`)
 - `schema`: version `2`
 - nested fields: `steps[]` and `steps[].actions[]`
+- action fields: `seq`, `sessionId`, `startTime`, `actionKey`, `actionType`, `duration`, plus Dynatrace timing in ms (`frontendTime`, `networkTime`, `serverTime`)
 
 ## Import instructions (Dashboard Studio)
 

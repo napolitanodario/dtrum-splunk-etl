@@ -205,6 +205,9 @@ def iter_flusso_events(result: FlowResult) -> Iterator[dict[str, Any]]:
                     "actionKey": _s(getattr(a, "actionKey", None)),
                     "actionType": _s(getattr(a, "actionType", None)),
                     "duration": dur,
+                    "frontendTime": _i(getattr(a, "frontendTime", None)),
+                    "networkTime": _i(getattr(a, "networkTime", None)),
+                    "serverTime": _i(getattr(a, "serverTime", None)),
                 }))
 
             step_starts = pd.to_numeric(sg["actionStartTime"], errors="coerce")

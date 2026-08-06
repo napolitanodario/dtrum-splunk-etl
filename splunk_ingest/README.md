@@ -12,6 +12,8 @@ Ship reconstructed lean funnel events to a Splunk HTTP Event Collector.
 |---|---|---|
 | `dtrum:funnel:flusso` | one per reconstructed emission attempt | nested `steps[]` with actions; `blockStartTime` / `blockEndTime`; enrichment `browserType` / `country` / `city` / `bounce` |
 
+Each entry in `steps[].actions[]` includes `seq`, `sessionId`, `startTime`, `actionKey`, `actionType`, `duration`, plus Dynatrace timing breakdown in ms: `frontendTime`, `networkTime`, `serverTime` (omitted when null).
+
 No `:action` or `:action_dim` events are emitted.
 
 ## Setup
