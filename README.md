@@ -191,7 +191,7 @@ python3 -c "from cache import migrate_legacy_flat_cache; print(migrate_legacy_fl
 
 ## Splunk ingest
 
-Package `splunk_ingest/` ships lean **schema v2** flusso events to Splunk HEC
+Package `splunk_ingest/` ships lean **schema v3** flusso events to Splunk HEC
 (`sourcetype` `…:flusso` only). It reads a day from `.cache/usql/{YYYY-MM-DD}/`
 and reuses `funnel.reconstruct_flows` + `funnel.splunk_events.iter_flusso_events`.
 

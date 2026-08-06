@@ -1,4 +1,4 @@
-"""Build lean Splunk HEC flusso events (schema v2) from funnel FlowResult."""
+"""Build lean Splunk HEC flusso events (schema v3) from funnel FlowResult."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from config import FUNNEL_DAY_TZ
 from funnel.categories import CATEGORY_NAMES
 from funnel.reconstruct import FlowResult
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _ENRICH_COLS = ("browserType", "country", "city", "bounce")
 
 

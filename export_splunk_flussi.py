@@ -1,4 +1,4 @@
-"""Export lean Splunk v2 flusso events from cached action chunks or Parquet."""
+"""Export lean Splunk v3 flusso events from cached action chunks or Parquet."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pathlib import Path
 
 from funnel.reconstruct import load_action_chunks, reconstruct_flows
 from funnel.splunk_events import (
+    SCHEMA_VERSION,
     iter_flusso_events,
     split_events_by_hour,
     write_flusso_jsonl,
@@ -23,7 +24,7 @@ DEFAULT_CACHE = Path(".cache/usql")
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Export lean Splunk v2 flusso JSONL from cache or actions Parquet.",
+        description="Export lean Splunk v3 flusso JSONL from cache or actions Parquet.",
     )
     parser.add_argument("--input", type=Path, help="Consolidated actions Parquet.")
     parser.add_argument(
@@ -103,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         "abandoned": n - completed,
         "jsonl": str(out_jsonl),
         "jsonl_mb": round(size_mb, 2),
-        "schema_version": 2,
+        "schema_version": SCHEMA_VERSION,
     }
 
     if args.split_by_hour:

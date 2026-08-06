@@ -3,7 +3,7 @@
 Ship reconstructed lean funnel events to a Splunk HTTP Event Collector.
 
 - **Sourcetype:** `{prefix}:flusso` only (default `dtrum:funnel:flusso`)
-- **Schema:** version **2** (same payload as `export_splunk_flussi.py` / JSONL exports)
+- **Schema:** version **3** (same payload as `export_splunk_flussi.py` / JSONL exports)
 - **Source:** USQL day cache (`.cache/usql/{YYYY-MM-DD}/`), not live Dynatrace fetch
 
 ## Events produced

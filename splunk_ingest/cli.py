@@ -1,4 +1,4 @@
-"""Command-line entrypoint for scheduled flusso v2 ingestion."""
+"""Command-line entrypoint for scheduled flusso v3 ingestion."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def _load_config(path: str | None, cache_dir: str | None) -> IngestConfig:
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(
         prog="splunk_ingest",
-        description="Ship lean FlussoP1 events (schema v2, sourcetype :flusso) to Splunk HEC.",
+        description="Ship lean FlussoP1 events (schema v3, sourcetype :flusso) to Splunk HEC.",
     )
     p.add_argument("command", choices=["run", "backfill"])
     p.add_argument("--config", help="TOML config file (default: SPLUNK_HEC_* env vars).")
@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     total_f = sum(r["flussi"] for r in results)
-    log.info("Done: %d day(s), %d flussi (schema v2).", len(results), total_f)
+    log.info("Done: %d day(s), %d flussi (schema v3).", len(results), total_f)
 
 
 if __name__ == "__main__":

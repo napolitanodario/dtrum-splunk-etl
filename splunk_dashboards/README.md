@@ -1,6 +1,6 @@
-# Splunk Dashboards Package (Flusso v2)
+# Splunk Dashboards Package (Flusso v3)
 
-This directory contains import-ready Splunk Dashboard Studio JSON files based on `:flusso` events (schema v2).
+This directory contains import-ready Splunk Dashboard Studio JSON files based on `:flusso` events (schema v3).
 
 ## Files
 
@@ -16,7 +16,7 @@ This directory contains import-ready Splunk Dashboard Studio JSON files based on
 ## Expected event source
 
 - `sourcetype`: `dtrum:funnel:flusso` (or your configured prefix + `:flusso`)
-- `schema`: version `2`
+- `schema`: version `3`
 - nested fields: `steps[]` and `steps[].actions[]`
 - action fields: `seq`, `sessionId`, `startTime`, `actionKey`, `actionType`, `duration`, plus Dynatrace timing in ms (`frontendTime`, `networkTime`, `serverTime`)
 
@@ -78,7 +78,7 @@ See `searches_reference.spl` sections:
 ## Legacy parity and gaps
 
 The dashboards replicate the key legacy analytics intent (overview, dropout, performance, detail).
-Some Mongo-specific business fields are not available in current flusso v2 payload (for example legacy document composition fields), so equivalent business panels are approximated with available `:flusso` metrics.
+Some Mongo-specific business fields are not available in current flusso v3 payload (for example legacy document composition fields), so equivalent business panels are approximated with available `:flusso` metrics.
 
 ## Optional external drilldown to raw dynatrace indexes
 
