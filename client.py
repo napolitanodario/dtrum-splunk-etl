@@ -23,8 +23,9 @@ INITIAL_WINDOW_MIN = 10  # discovery and other dense queries
 ACTIONS_INITIAL_WINDOW_MIN = 60  # session actions (selective sessionId IN filter)
 # Smallest window before fetch fails instead of returning incomplete data.
 MIN_WINDOW_MS = 1_000
-RETRY_ATTEMPTS = 3
-RETRY_BACKOFF = 5  # seconds between retries on 429/503
+# Transient retries (timeout / connection / 429 / 503): progressive sleep budget.
+RETRY_INITIAL_BACKOFF_SEC = 5
+RETRY_BUDGET_SEC = 300  # stop after this many seconds of wait, then raise
 
 
 class DynatraceUSQLClient:
@@ -131,7 +132,8 @@ class DynatraceUSQLClient:
         """Execute one USQL table request for a single time window.
 
         Always requests explain=true and logs Dynatrace explanations.
-        Retries on HTTP 429/503 with a fixed backoff.
+        Retries on timeout, connection errors, and HTTP 429/503 with progressive
+        backoff until RETRY_BUDGET_SEC of sleep has been used, then raises.
         Substitutes {start_ms}/{end_ms} in the query when present.
         """
         bound_query = (
@@ -157,22 +159,48 @@ class DynatraceUSQLClient:
 
         # quote_via=quote keeps spaces as %20 (the API rejects '+').
         qs = urlencode(params, quote_via=quote)
-        for attempt in range(1, RETRY_ATTEMPTS + 1):
-            resp = self.session.get(f"{self.base_url}?{qs}", timeout=self.timeout)
-            if resp.status_code == 200:
-                data = resp.json()
-                for explanation in data.get("explanations") or []:
-                    log.info("USQL explain: %s", explanation)
-                return data
+        url = f"{self.base_url}?{qs}"
+        waited = 0
+        backoff = RETRY_INITIAL_BACKOFF_SEC
+        attempt = 0
+        last_error: Exception | str | None = None
 
-            if resp.status_code in (429, 503) and attempt < RETRY_ATTEMPTS:
-                log.warning(
-                    "HTTP %s - retry %d/%d in %ds",
-                    resp.status_code, attempt, RETRY_ATTEMPTS, RETRY_BACKOFF,
-                )
-                time.sleep(RETRY_BACKOFF)
-                continue
+        while True:
+            attempt += 1
+            try:
+                resp = self.session.get(url, timeout=self.timeout)
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                last_error = exc
+                reason = f"{type(exc).__name__}: {exc}"
+            else:
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for explanation in data.get("explanations") or []:
+                        log.info("USQL explain: %s", explanation)
+                    return data
 
-            resp.raise_for_status()
+                if resp.status_code in (429, 503):
+                    last_error = f"HTTP {resp.status_code}"
+                    reason = last_error
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after and retry_after.isdigit():
+                        backoff = max(backoff, int(retry_after))
+                else:
+                    resp.raise_for_status()
+                    raise RuntimeError(f"Unexpected HTTP {resp.status_code}")
 
-        raise RuntimeError("Max retries exceeded")
+            remaining = RETRY_BUDGET_SEC - waited
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"USQL request failed after {RETRY_BUDGET_SEC}s of retries "
+                    f"({attempt} attempt(s)): {last_error}"
+                ) from (last_error if isinstance(last_error, Exception) else None)
+
+            delay = min(backoff, remaining)
+            log.warning(
+                "%s - retry %d in %ds (waited %ds/%ds)",
+                reason, attempt, delay, waited, RETRY_BUDGET_SEC,
+            )
+            time.sleep(delay)
+            waited += delay
+            backoff = min(backoff * 2, RETRY_BUDGET_SEC)
