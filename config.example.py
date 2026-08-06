@@ -56,8 +56,9 @@ FUNNEL_DAY_TZ = "Europe/Rome"
 
 load_dotenv()
 
-# Logging is configured by the CLI (main.setup_logging). Keep a named logger
-# for modules that import config early.
+# Logging is configured by the CLI (main.setup_logging): midnight-rotated
+# etl.log / etl_issues.log under logs/. Keep a named logger for modules that
+# import config early.
 log = logging.getLogger("usat")
 
 

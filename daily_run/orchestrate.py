@@ -13,7 +13,7 @@ from main import run as fetch_usql_day
 from splunk_ingest.config import IngestConfig
 from splunk_ingest.pipeline import latest_settled_day, run_incremental
 from splunk_ingest.state import State
-from utils import datetime_to_timestamp_ms_utc
+from utils import datetime_to_timestamp_ms_utc, prune_log_files
 
 log = logging.getLogger("daily_run")
 
@@ -158,16 +158,10 @@ def prune_cache_and_logs(
 
     log_dir = Path("logs")
     if log_dir.is_dir() and not dry_run:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-        for path in log_dir.glob("etl_*.log"):
-            try:
-                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-            except OSError:
-                continue
-            if mtime < cutoff:
-                path.unlink(missing_ok=True)
-                summary["logs_removed"] += 1
-                log.info("Removed old log %s", path.name)
+        n = prune_log_files(log_dir, retention_days=retention_days)
+        summary["logs_removed"] = n
+        if n:
+            log.info("Removed %d aged log file(s) from %s", n, log_dir)
 
     return summary
 

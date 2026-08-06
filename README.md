@@ -31,7 +31,7 @@ it for downstream funnel analysis and Splunk export.
 | `run_daily.bat` | Thin Windows wrapper for Task Scheduler |
 | `funnel/` | Funnel breakdown, tagging, per-flusso metrics |
 | `funnel/*.example.py` | Committable stubs for private funnel definitions / matcher |
-| `logs/` | Per-run log files (gitignored) |
+| `logs/` | Rotating log files (gitignored) |
 
 ## Setup
 
@@ -132,11 +132,12 @@ result.matched        # actions tagged with flusso_id / step_index
 result.step_breakdown # one row per flusso × funnel step
 ```
 
-Logs (under `logs/`):
+Logs (under `logs/`), midnight-rotated (UTC) with 14-day retention:
 
-- `etl_<utc>_issues.log` – WARNING+ only (incomplete windows, sampling shrinks,
+- `etl_issues.log` – WARNING+ only (incomplete windows, sampling shrinks,
   fetch failures).
-- `etl_<utc>.log` – full run trace (DEBUG+), including USQL explain messages.
+- `etl.log` – full run trace (DEBUG+), including USQL explain messages.
+- `daily_run.log` – unattended daily orchestrator trace.
 
 `fetch` treats a window as incomplete when `len(rows) >= page_size` or
 `extrapolationLevel != 1`, shrinks the time window, and logs a WARNING. If the
@@ -237,7 +238,8 @@ The orchestrator:
 4. After a successful ingest, prunes USQL day folders older than
    `[cache] retention_days` (default **14**; `0` = never). Days still ahead of the
    Splunk watermark are never deleted. `.cache/splunk_state/` is never pruned.
-   At ~40 MB/day, 14 days ≈ 0.5–0.6 GB.
+   At ~40 MB/day, 14 days ≈ 0.5–0.6 GB. Aged `logs/` files (`etl*`, `daily_run*`,
+   including rotated suffixes) are pruned with the same retention.
 
 Useful flags: `--skip-fetch`, `--skip-ingest`, `--skip-prune`,
 `--cache-retention-days N`, `--force-fetch`, `--day YYYY-MM-DD`.
@@ -248,6 +250,6 @@ Useful flags: `--skip-fetch`, `--skip-ingest`, `--skip-prune`,
 2. Start in: project root (folder that contains `run_daily.bat`)
 3. Trigger: daily at **≥ 07:00 Europe/Rome** (default lag is 6h after midnight)
 4. Run whether user is logged on or not (service account with network rights)
-5. On failure: non-zero exit → Task History / Last Run Result; details in `logs/daily_run_*.log`
+5. On failure: non-zero exit → Task History / Last Run Result; details in `logs/daily_run.log`
 
 Do not use “highest privileges” unless required by proxy/policy.

@@ -5,10 +5,10 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 from splunk_ingest.config import IngestConfig
+from utils import make_timed_rotating_handler, prune_log_files
 
 from .orchestrate import run_daily
 
@@ -16,9 +16,11 @@ log = logging.getLogger("daily_run")
 
 
 def setup_logging(log_dir: Path) -> Path:
+    log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_log = log_dir / f"daily_run_{run_id}.log"
+    prune_log_files(log_dir)
+
+    run_log = log_dir / "daily_run.log"
 
     root = logging.getLogger()
     root.handlers.clear()
@@ -29,15 +31,13 @@ def setup_logging(log_dir: Path) -> Path:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    fh = logging.FileHandler(run_log, encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(fmt)
+    root.addHandler(
+        make_timed_rotating_handler(run_log, level=logging.DEBUG, formatter=fmt)
+    )
 
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(logging.INFO)
     ch.setFormatter(fmt)
-
-    root.addHandler(fh)
     root.addHandler(ch)
 
     # Keep child loggers (usat, splunk_ingest) visible.
@@ -93,7 +93,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--log-dir",
         type=Path,
         default=Path("logs"),
-        help="Directory for daily_run_*.log (default: logs/).",
+        help="Directory for daily_run.log (midnight-rotated; default: logs/).",
     )
     return p.parse_args(argv)
 

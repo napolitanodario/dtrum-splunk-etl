@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -25,7 +24,11 @@ from config import (
 )
 from funnel.reconstruct import reconstruct_flows, write_flow_outputs
 from queries import discovery_query, session_actions_query
-from utils import iso_string_to_timestamp_ms_utc
+from utils import (
+    make_timed_rotating_handler,
+    prune_log_files,
+    iso_string_to_timestamp_ms_utc,
+)
 
 log = logging.getLogger("usat")
 
@@ -39,11 +42,13 @@ DEFAULT_OUTPUT = OUTPUT_DIR / "user_actions_2026-07-21.parquet"
 
 
 def setup_logging(log_dir: Path) -> tuple[Path, Path]:
-    """Configure console + file logging under log_dir."""
+    """Configure console + midnight-rotating file logging under log_dir."""
+    log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_log = log_dir / f"etl_{run_id}.log"
-    issues_log = log_dir / f"etl_{run_id}_issues.log"
+    prune_log_files(log_dir)
+
+    run_log = log_dir / "etl.log"
+    issues_log = log_dir / "etl_issues.log"
 
     logger = logging.getLogger("usat")
     logger.setLevel(logging.DEBUG)
@@ -55,20 +60,16 @@ def setup_logging(log_dir: Path) -> tuple[Path, Path]:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    file_all = logging.FileHandler(run_log, encoding="utf-8")
-    file_all.setLevel(logging.DEBUG)
-    file_all.setFormatter(fmt)
-
-    file_issues = logging.FileHandler(issues_log, encoding="utf-8")
-    file_issues.setLevel(logging.WARNING)
-    file_issues.setFormatter(fmt)
+    logger.addHandler(
+        make_timed_rotating_handler(run_log, level=logging.DEBUG, formatter=fmt)
+    )
+    logger.addHandler(
+        make_timed_rotating_handler(issues_log, level=logging.WARNING, formatter=fmt)
+    )
 
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
     console.setFormatter(fmt)
-
-    logger.addHandler(file_all)
-    logger.addHandler(file_issues)
     logger.addHandler(console)
 
     return run_log, issues_log
